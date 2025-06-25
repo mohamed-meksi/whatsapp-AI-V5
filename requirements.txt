@@ -1,0 +1,10 @@
+flask
+python-dotenv
+aiohttp
+requests
+google-generativeai
+asyncpg
+alembic
+langdetect
+pymongo
+gunicorn

@@ -1,0 +1,29 @@
+{
+  "web_development": [
+    {
+      "id": "WD2024-1",
+      "name": "Full Stack Web Development Bootcamp",
+      "start_date": "2024-05-01",
+      "duration": "12 weeks",
+      "schedule": "Monday-Friday, 9:00 AM - 5:00 PM",
+      "spots_available": 20,
+      "curriculum": [
+        "HTML/CSS/JavaScript",
+        "React",
+        "Node.js",
+        "Express",
+        "MongoDB",
+        "Python",
+        "Django"
+      ],
+      "price": 8999
+    },
+    {
+      "id": "WD2024-2",
+      "start_date": "2024-09-01",
+      "duration": "12 weeks",
+      "schedule": "Monday-Friday, 9:00 AM - 5:00 PM",
+      "spots_available": 20
+    }
+  ]
+}
