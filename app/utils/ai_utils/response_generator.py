@@ -41,6 +41,7 @@ def generate_response(message_body: str, wa_id: str, name: str) -> str:
             f"Current step: {current_step}\n"
             f"User state: {user_state}\n"
             f"Detected language: {detected_language}\n"
+            f"Please respond in {detected_language}.\n"
             f"[END INTERNAL CONTEXT]\n\n"
             f"User message: {message_body}"
         )

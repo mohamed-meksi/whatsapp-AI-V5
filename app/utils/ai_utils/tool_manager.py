@@ -70,10 +70,19 @@ class ToolManager:
         def get_bootcamp_info_func():
             return db_service.format_program_info_for_chat()
 
-        def register_student_func(location: str, first_name: str, last_name: str, email: str, phone: str, age: str):
+        def register_student_func(wa_id: str, location: str, first_name: str, last_name: str, email: str, phone: str, age: str):
             try:
-                age_int = int(age)
+                # Vérification d'inscription préalable avec le wa_id
+                if self.conversation_manager.is_user_registered(wa_id):
+                    detected_language = self.conversation_manager.detected_language
+                    if detected_language == "fr":
+                        return "Vous êtes déjà inscrit(e). Il n'est pas possible de s'inscrire une deuxième fois."
+                    elif detected_language == "ar":
+                        return "أنت مسجل بالفعل. لا يمكن التسجيل مرة أخرى."
+                    else:
+                        return "You are already registered. It is not possible to register again."
 
+                age_int = int(age)
                 program = db_service.get_program_by_location(location)
                 if not program:
                     raise ValueError("Program/Session not found for the specified location.")
@@ -84,7 +93,8 @@ class ToolManager:
                     last_name,
                     email,
                     phone,
-                    age_int
+                    age_int,
+                    wa_id  # Ajout du wa_id à la base de données
                 )
 
                 detected_language = self.conversation_manager.detected_language

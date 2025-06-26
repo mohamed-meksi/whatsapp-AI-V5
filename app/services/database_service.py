@@ -4,6 +4,7 @@ from bson import ObjectId
 from dotenv import load_dotenv
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+import unicodedata
 
 load_dotenv()
 
@@ -29,7 +30,12 @@ class DatabaseService:
         self.programs_collection.create_index([("program_name", "text"), ("location", "text")])
         self.registrations_collection.create_index("email", unique=True)
         self.registrations_collection.create_index("program_id")
-
+    
+    def is_user_registered(self, wa_id: str) -> bool:
+        # Utiliser le service de base de données, pas self.db
+        user = self.db_service.registrations_collection.find_one({'wa_id': wa_id})
+        
+        return user is not None
     def _convert_objectid(self, doc: Dict) -> Dict:
         if doc and '_id' in doc:
             doc['id'] = str(doc['_id'])
@@ -44,20 +50,16 @@ class DatabaseService:
             print(f"Error getting all programs: {e}")
             return []
 
-    # MODIFICATION: This function can be more precise if program_name is also provided
-    def get_program_by_name_and_location(self, program_name: str, location: str) -> Optional[Dict]:
-        """
-        Récupère les détails du programme par nom de programme ET par lieu.
-        """
-        try:
-            program = self.programs_collection.find_one({
-                "program_name": {"$regex": program_name, "$options": "i"},
-                "location": {"$regex": location, "$options": "i"}
-            })
-            return self._convert_objectid(program) if program else None
-        except Exception as e:
-            print(f"Error getting program by name and location: {e}")
-            return None
+    def get_program_by_name_and_location(self, program_name, location):
+        # Recherche souple
+        for prog in self.db['programs'].find():
+            if (self.normalize(prog['program_name']) == self.normalize(program_name)
+                and self.normalize(prog['location']) == self.normalize(location)):
+                return prog
+        return None
+
+    def normalize(self, s):
+        return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII').lower().replace('-', ' ').replace('_', ' ').strip()
 
     # Keep get_program_by_location if it's used elsewhere for broader searches
     def get_program_by_location(self, location_name: str) -> Optional[Dict]:
@@ -81,7 +83,7 @@ class DatabaseService:
             return None
 
     def register_student(self, program_id: str, first_name: str, last_name: str,
-                         email: str, phone: str, age: int) -> Dict:
+                         email: str, phone: str, age: int, wa_id: str) -> Dict:
         try:
             program = self.programs_collection.find_one({"_id": ObjectId(program_id)})
             if not program:
@@ -101,6 +103,7 @@ class DatabaseService:
                 "email": email,
                 "phone": phone,
                 "age": age,
+                "wa_id": wa_id,
                 "registration_date": datetime.utcnow(),
                 "status": "pending"
             }

@@ -45,6 +45,10 @@ class ConversationManager:
         ]
         self.tool_manager = ToolManager(self)
         self.detected_language: str = "en"
+        
+    def is_user_registered(self, wa_id: str) -> bool:
+        user = self.db_service.registrations_collection.find_one({'wa_id': wa_id})
+        return user is not None
 
     def get_user_state(self, user_id: str):
         """Récupère ou initialise l'état de l'utilisateur depuis la base de données."""
@@ -129,12 +133,12 @@ class ConversationManager:
             gemini_history = []
             
             initial_system_context_template = (
-                "You are a helpful and professional educational assistant for a Full Stack Web Development Bootcamp. "
+                "You are a helpful and professional educational assistant for a Bootcamp. "
                 "Your primary goal is to guide potential students through the bootcamp information and registration process. "
                 "You are based in Casablanca, Morocco. Respond in French unless the user explicitly requests another language, or it's clear they are speaking Arabic or English. " 
                 "**IMPORTANT: For language detection, use the language tag ONLY internally for your processing. "
                 "NEVER include language tags like [LANG:fr], [LANG:en], or [LANG:ar] in your responses to users.** "
-                "**PRIORITY 1: Detect the user's language from their message and respond in the same language. (French, Arabic, or English)** "
+                "**PRIORITY 1: Detect the user's language from their message and respond in the same language. (French, Arabic, or English or darija)** "
                 "**PRIORITY 2: If a user asks for information that an AVAILABLE TOOL can provide, you ABSOLUTELY MUST call that tool using the `{{tool_name:arg1,arg2,...}}` syntax. This tool call MUST be the ONLY thing in your response. DO NOT add any conversational text.** "
                 "**PRIORITY 3: If a tool does not require arguments, use `{{tool_name}}`.** "
                 "Do not make up information. If you lack information for a tool, ask for it clearly. "
@@ -232,7 +236,7 @@ class ConversationManager:
                         raw_result = tool.execute(user_id)
                     elif tool_name == "register_student":
                         if len(args) == 6:
-                            raw_result = tool.execute(*args) 
+                            raw_result = tool.execute(user_id, *args)  # user_id = wa_id
                         else:
                             raw_result = f"Error: register_student requires 6 arguments (location, first_name, last_name, email, phone, age), but received {len(args)} from tool call '{tool_call_str}' parsed as: {args}."
                     elif tool_name == "get_program_details":
