@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from .tool_manager import ToolManager
 import google.generativeai as genai
 import os
@@ -16,7 +16,7 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 generation_config = {
     "temperature": 0.7,
@@ -68,9 +68,121 @@ class ConversationManager:
         return self.user_states[user_id]
 
     def _save_user_state(self, user_id: str):
-        """Sauvegarde l'état utilisateur en base de données."""
-        if user_id in self.user_states:
-            self.db_service.save_user_session(user_id, self.user_states[user_id])
+        """Sauvegarde l'état utilisateur dans la base de données."""
+        try:
+            if user_id in self.user_states:
+                state = self.user_states[user_id]
+                # Utiliser upsert pour créer ou mettre à jour
+                self.db_service.db.user_sessions.replace_one(
+                    {"user_id": user_id},
+                    {"user_id": user_id, "state": state},
+                    upsert=True
+                )
+                logging.info(f"État sauvegardé pour l'utilisateur {user_id}")
+        except Exception as e:
+            logging.error(f"Erreur lors de la sauvegarde de l'état pour {user_id}: {e}")
+
+    def update_user_info_progressive(self, user_id: str, data: Dict) -> Dict:
+        """
+        Met à jour les informations utilisateur de manière progressive.
+        Détecte automatiquement le type de données et les stocke.
+        """
+        state = self.get_user_state(user_id)
+        personal_info = state.get("personal_info", {})
+        
+        # Patterns de détection
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        phone_pattern = r'^[\+]?[(]?[0-9]{3}[)]?[-\s\.]?[(]?[0-9]{3}[)]?[-\s\.]?[0-9]{4,6}$'
+        
+        updated_fields = []
+        
+        # Analyser le texte pour extraire les informations
+        text = data.get("text", "").strip()
+        
+        # Détection de l'email
+        import re
+        email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+        if email_match and "email" not in personal_info:
+            email = email_match.group()
+            personal_info["email"] = email
+            updated_fields.append("email")
+        
+        # Détection du téléphone
+        phone_match = re.search(r'[\+]?[(]?[0-9]{3}[)]?[-\s\.]?[(]?[0-9]{3}[)]?[-\s\.]?[0-9]{4,6}', text)
+        if phone_match and "phone" not in personal_info:
+            phone = phone_match.group()
+            personal_info["phone"] = phone
+            updated_fields.append("phone")
+        
+        # Détection de l'âge
+        age_patterns = [
+            r'(\d{1,2})\s*(?:ans|years|yo)',
+            r'(?:age|âge)\s*[:=]?\s*(\d{1,2})',
+            r'^(\d{1,2})$'  # Juste un nombre
+        ]
+        
+        for pattern in age_patterns:
+            age_match = re.search(pattern, text, re.IGNORECASE)
+            if age_match and "age" not in personal_info:
+                age = int(age_match.group(1))
+                if 16 <= age <= 100:  # Validation basique
+                    personal_info["age"] = age
+                    updated_fields.append("age")
+                    break
+        
+        # Détection du nom complet
+        if not personal_info.get("full_name") and not any(char.isdigit() for char in text):
+            # Si le texte ne contient pas de chiffres et n'est pas un email/téléphone
+            if "@" not in text and not phone_match and not age_match:
+                words = text.split()
+                if 1 < len(words) <= 4:  # Nom raisonnable
+                    personal_info["full_name"] = text.title()
+                    updated_fields.append("full_name")
+        
+        # Sauvegarder l'état
+        state["personal_info"] = personal_info
+        self._save_user_state(user_id)
+        
+        # Retourner les informations mises à jour
+        return {
+            "updated_fields": updated_fields,
+            "personal_info": personal_info,
+            "missing_fields": self.get_missing_fields(user_id)
+        }
+
+    def get_missing_fields(self, user_id: str) -> List[str]:
+        """
+        Retourne la liste des champs manquants pour l'inscription.
+        """
+        state = self.get_user_state(user_id)
+        personal_info = state.get("personal_info", {})
+        
+        required_fields = {
+            "full_name": "nom complet",
+            "email": "adresse email",
+            "phone": "numéro de téléphone",
+            "age": "âge"
+        }
+        
+        missing = []
+        for field, field_name in required_fields.items():
+            if field not in personal_info or not personal_info[field]:
+                missing.append(field_name)
+        
+        return missing
+
+    def get_next_missing_field(self, user_id: str) -> Optional[str]:
+        """
+        Retourne le prochain champ manquant à collecter.
+        """
+        missing = self.get_missing_fields(user_id)
+        return missing[0] if missing else None
+
+    def is_collection_complete(self, user_id: str) -> bool:
+        """
+        Vérifie si toutes les informations requises sont collectées.
+        """
+        return len(self.get_missing_fields(user_id)) == 0
 
     def get_current_step(self, user_id: str) -> str:
         """Retourne l'étape actuelle pour un utilisateur."""
@@ -166,31 +278,91 @@ class ConversationManager:
             gemini_history = []
             
             initial_system_context_template = (
-                "You are a helpful and professional educational assistant for a Full Stack Web Development Bootcamp. "
-                "Your primary goal is to guide potential students through the bootcamp information and registration process. "
-                "You are based in Casablanca, Morocco. "
-                "**IMPORTANT: For language detection, use simple keyword matching first (bonjour/hello/مرحبا) before full detection.** "
-                "**PRIORITY 1: Quick language detection - French for 'bonjour/salut/merci', Arabic for 'مرحبا/شكرا', English for 'hi/hello/thanks'. Only use full detection if unclear.** "
-                "**PRIORITY 2: When user asks about a program or bootcamp:** "
-                "1. Use get_bootcamp_info(program_name, location) to get specific program details "
-                "2. If not found, use search_programs(search_term) to find similar programs "
-                "3. Always suggest alternatives if the exact program is not found "
-                "4. Provide complete information about available programs, including start dates, duration, and price "
-                "**PRIORITY 3: When user reaches step 'collect_personal_info', IMMEDIATELY check if they are already registered using check_user_registration tool before collecting any information.** "
-                "**PRIORITY 4: If check_user_registration returns 'COLLECTE D'INFORMATIONS BLOQUÉE', 'تم حظر جمع المعلومات', or 'INFORMATION COLLECTION BLOCKED', do NOT proceed with collecting personal information. Display the registration details and offer help.** "
-                "**PRIORITY 5: If check_user_registration returns 'NOUVELLE_INSCRIPTION', 'تسجيل_جديد', or 'NEW_REGISTRATION', proceed with normal information collection.** "
-                "**PRIORITY 6: NEVER respond with 'we don't offer this program' without first checking available programs. Always show alternative programs that might interest the user.** "
-                "**PRIORITY 7: If a user asks for information that an AVAILABLE TOOL can provide, you ABSOLUTELY MUST call that tool using the `{{tool_name:arg1,arg2,...}}` syntax. This tool call MUST be the ONLY thing in your response. DO NOT add any conversational text.** "
-                "**PRIORITY 8: If a tool does not require arguments, use `{{tool_name}}`.** "
-                "**PRIORITY 9: NEVER use code blocks (```) around tool calls. Tool calls should be direct: {{tool_name}} or {{tool_name:arg1,arg2}}** "
-                "**PRIORITY 10: For registration, ALWAYS use verify_registration_info tool first to confirm information with user before calling register_student tool.** "
-                "**PRIORITY 11: NEVER ask for WhatsApp number (wa_id) as it is automatically collected from the WhatsApp API. When user confirms their information with 'yes', proceed directly to registration using the wa_id from their state.** "
-                "Do not make up information. If you lack information for a tool, ask for it clearly. "
-                "Be friendly, encouraging, and provide thorough answers in the user's language.\n\n"
-                "--- Available Tools ---\n"
-                "{tool_descriptions}\n"
-                "-----------------------\n\n"
-            )
+                            "You are a helpful and professional educational assistant for a Full Stack Web Development Bootcamp. "
+                            "Your primary goal is to guide potential students through the bootcamp information and registration process. "
+                            "You are based in Casablanca, Morocco.\n\n"
+                            
+                            "**🌐 LANGUAGE DETECTION PRIORITIES:**\n"
+                            "**PRIORITY 1:** Quick language detection using keywords FIRST:\n"
+                            "- French: bonjour/salut/merci/bonsoir/s'il vous plaît\n"
+                            "- Arabic: مرحبا/شكرا/السلام عليكم/أهلا\n"
+                            "- English: hi/hello/thanks/good morning/please\n"
+                            "- Only use full detection if keywords are unclear\n"
+                            "- Respond in the detected language throughout the conversation\n\n"
+                            
+                            "**🔍 PROGRAM SEARCH PRIORITIES:**\n"
+                            "**PRIORITY 2:** When user asks about any program/bootcamp/formation:\n"
+                            "1. ALWAYS use search_programs(search_term) tool FIRST\n"
+                            "2. The tool will find exact matches OR suggest similar programs\n"
+                            "3. NEVER say 'we don't have this program' without searching first\n"
+                            "4. If no exact match, present the similar programs found\n"
+                            "5. Always show alternatives with complete details (dates, duration, price)\n"
+                            "6. The search handles typos and variations automatically\n\n"
+                            
+                            "**✅ REGISTRATION CHECK PRIORITIES:**\n"
+                            "**PRIORITY 3:** At 'collect_personal_info' step:\n"
+                            "- IMMEDIATELY use check_user_registration tool BEFORE collecting any info\n"
+                            "- If returns 'COLLECTE D'INFORMATIONS BLOQUÉE'/'تم حظر جمع المعلومات'/'INFORMATION COLLECTION BLOCKED':\n"
+                            "  → DO NOT collect information\n"
+                            "  → Display their existing registration\n"
+                            "  → Offer help with other questions\n"
+                            "- If returns 'NOUVELLE_INSCRIPTION'/'تسجيل_جديد'/'NEW_REGISTRATION':\n"
+                            "  → Proceed with progressive data collection\n\n"
+                            
+                            "**📝 DATA COLLECTION PRIORITIES:**\n"
+                            "**PRIORITY 4:** Progressive information gathering:\n"
+                            "1. Use update_user_info_progressive for ANY user input during collection\n"
+                            "2. Tool auto-detects: email, phone, age, name from any format\n"
+                            "3. Accept info in ANY order - no forced sequence\n"
+                            "4. Multiple info in one message? Tool extracts all automatically\n"
+                            "5. Always acknowledge what was saved and ask only for missing info\n"
+                            "6. NEVER show errors for partial info - be encouraging\n"
+                            "7. Examples of accepted formats:\n"
+                            "   - Age: '25', '25 ans', '25 years', 'j'ai 25 ans'\n"
+                            "   - Phone: '+212612345678', '0612345678', '06 12 34 56 78'\n"
+                            "   - Email: Automatically detected from any text\n\n"
+                            
+                            "**🔧 TOOL USAGE PRIORITIES:**\n"
+                            "**PRIORITY 5:** Tool call syntax:\n"
+                            "- Use {{tool_name:arg1,arg2}} or {{tool_name}} format ONLY\n"
+                            "- Tool call MUST be the ONLY content in response\n"
+                            "- NEVER use code blocks ``` around tool calls\n"
+                            "- NEVER add conversational text with tool calls\n\n"
+                            
+                            "**PRIORITY 6:** Registration confirmation:\n"
+                            "- Use verify_registration_info_progressive to show collected data\n"
+                            "- Only proceed to register_student after user confirms with 'oui'/'yes'/'نعم'\n"
+                            "- NEVER ask for WhatsApp ID - it's auto-captured\n\n"
+                            
+                            "**💬 CONVERSATION FLOW:**\n"
+                            "1. **motivation**: Welcome user, understand their goals\n"
+                            "2. **program_selection**: Find right program (use search_programs)\n"
+                            "3. **collect_personal_info**: Check registration first, then collect progressively\n"
+                            "4. **verify_information**: Confirm all details before registration\n"
+                            "5. **confirm_enrollment**: Process registration after confirmation\n"
+                            "6. **enrollment_complete**: Success message with next steps\n"
+                            "7. **already_registered**: Help existing students with questions\n\n"
+                            
+                            "**🎯 KEY BEHAVIORS:**\n"
+                            "- Be warm, encouraging, and professional\n"
+                            "- Never make assumptions - always verify with tools\n"
+                            "- Present information clearly with emojis and formatting\n"
+                            "- Guide users naturally through the process\n"
+                            "- Celebrate small wins (each info collected)\n"
+                            "- Handle errors gracefully without frustrating users\n\n"
+                            
+                            "**⚠️ REMEMBER:**\n"
+                            "- Search finds programs even with typos/variations\n"
+                            "- Data collection is flexible and forgiving\n"
+                            "- Always check existing registration before collecting info\n"
+                            "- Tools handle the complexity - just use them correctly\n"
+                            "- User experience is priority - be helpful, not rigid\n\n"
+                            
+                            "--- Available Tools ---\n"
+                            "{tool_descriptions}\n"
+                            "-----------------------\n\n"
+                        )
+            
 
             # Obtenir les descriptions des outils avant de formater le prompt système
             tool_descriptions_for_prompt = self.tool_manager.get_tool_descriptions("fr")

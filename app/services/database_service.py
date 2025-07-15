@@ -10,7 +10,7 @@ load_dotenv()
 
 # MongoDB Configuration
 MONGODB_URL = os.getenv('MONGODB')
-DATABASE_NAME = os.getenv('DATABASE_1')
+DATABASE_NAME = os.getenv('DATABASE')
 
 class DatabaseService:
     def __init__(self):
@@ -104,7 +104,13 @@ class DatabaseService:
         """Vérifie si l'inscription est possible."""
         try:
             # Vérifier si le programme existe et a des places disponibles
-            program = self.programs_collection.find_one({"_id": ObjectId(program_id)})
+            try:
+                program_object_id = ObjectId(program_id)
+            except:
+                logging.error(f"ID de programme invalide: {program_id}")
+                raise ValueError("ID de programme invalide.")
+
+            program = self.programs_collection.find_one({"_id": program_object_id})
             if not program:
                 logging.error(f"Programme {program_id} non trouvé")
                 raise ValueError("Programme introuvable.")
@@ -121,9 +127,11 @@ class DatabaseService:
                 
             logging.info(f"Vérification réussie pour wa_id {wa_id} et programme {program_id}")
             
+        except ValueError as ve:
+            raise ve
         except Exception as e:
             logging.error(f"Error in verify_registration_possibility: {str(e)}")
-            raise ValueError(str(e))
+            raise ValueError(f"Erreur lors de la vérification de l'inscription : {str(e)}")
 
     def get_user_registration_by_wa_id(self, wa_id: str) -> Optional[Dict]:
         """Récupère l'inscription existante d'un utilisateur par son wa_id."""
@@ -386,6 +394,166 @@ class DatabaseService:
         except Exception as e:
             print(f"Error formatting program info for chat: {e}")
             return "❌ Erreur lors de l'affichage des informations sur les programmes. Veuillez réessayer."
+
+    def get_program_by_name_and_location_fuzzy(self, program_name: str, location: str) -> Optional[Dict]:
+        """
+        Version améliorée qui trouve le programme le plus proche même si le nom n'est pas exact.
+        """
+        try:
+            # D'abord essayer une recherche exacte
+            exact_match = self.programs_collection.find_one({
+                "program_name": {"$regex": f"^{program_name}$", "$options": "i"},
+                "location": {"$regex": f"^{location}$", "$options": "i"}
+            })
+            
+            if exact_match:
+                return self._convert_objectid(exact_match)
+            
+            # Si pas de match exact, chercher des correspondances partielles
+            from difflib import SequenceMatcher
+            
+            all_programs = list(self.programs_collection.find({}))
+            best_match = None
+            best_score = 0
+            
+            program_lower = program_name.lower().strip()
+            location_lower = location.lower().strip()
+            
+            for program in all_programs:
+                prog_name = program.get('program_name', '').lower()
+                prog_location = program.get('location', '').lower()
+                
+                # Score pour le nom du programme
+                name_score = SequenceMatcher(None, program_lower, prog_name).ratio()
+                
+                # Score pour la location (plus important)
+                location_score = SequenceMatcher(None, location_lower, prog_location).ratio()
+                
+                # Score combiné (privilégier la location)
+                combined_score = (name_score * 0.4) + (location_score * 0.6)
+                
+                # Bonus si des mots clés correspondent
+                if any(word in prog_name for word in program_lower.split() if len(word) > 3):
+                    combined_score += 0.2
+                
+                if combined_score > best_score:
+                    best_score = combined_score
+                    best_match = program
+            
+            # Retourner le meilleur match si le score est suffisant
+            if best_match and best_score > 0.5:
+                return self._convert_objectid(best_match)
+            
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error in get_program_by_name_and_location_fuzzy: {e}")
+            return None
+
+    def find_similar_programs(self, search_term: str, threshold: float = 0.6) -> List[Dict]:
+        """
+        Trouve des programmes similaires basés sur la similarité de texte.
+        Utilise une recherche floue pour trouver les programmes les plus proches.
+        """
+        try:
+            from difflib import SequenceMatcher
+            
+            all_programs = list(self.programs_collection.find({}))
+            results = []
+            
+            search_lower = search_term.lower().strip()
+            
+            for program in all_programs:
+                # Calcul de similarité pour le nom du programme
+                program_name = program.get('program_name', '').lower()
+                location = program.get('location', '').lower()
+                
+                # Score de similarité pour le nom
+                name_similarity = SequenceMatcher(None, search_lower, program_name).ratio()
+                
+                # Score de similarité pour la location
+                location_similarity = SequenceMatcher(None, search_lower, location).ratio()
+                
+                # Score combiné (privilégier la location si elle match bien)
+                combined_score = max(name_similarity, location_similarity * 1.2)
+                
+                # Vérifier aussi si le terme de recherche est contenu dans le nom ou la location
+                if search_lower in program_name or search_lower in location:
+                    combined_score = max(combined_score, 0.8)
+                
+                # Vérifier les mots individuels
+                search_words = search_lower.split()
+                for word in search_words:
+                    if len(word) > 3:  # Ignorer les mots courts
+                        if word in program_name or word in location:
+                            combined_score = max(combined_score, 0.7)
+                
+                if combined_score >= threshold:
+                    results.append({
+                        'program': self._convert_objectid(program),
+                        'score': combined_score
+                    })
+            
+            # Trier par score décroissant
+            results.sort(key=lambda x: x['score'], reverse=True)
+            
+            return [r['program'] for r in results]
+            
+        except Exception as e:
+            logging.error(f"Error in find_similar_programs: {e}")
+            return []
+
+    def search_programs_intelligent(self, search_term: str) -> List[Dict]:
+        """
+        Recherche intelligente qui trouve les programmes même avec des fautes de frappe.
+        """
+        try:
+            # D'abord chercher des correspondances exactes
+            exact_matches = list(self.programs_collection.find({
+                "$or": [
+                    {"program_name": {"$regex": search_term, "$options": "i"}},
+                    {"location": {"$regex": search_term, "$options": "i"}}
+                ]
+            }))
+            
+            if exact_matches:
+                return [self._convert_objectid(p) for p in exact_matches]
+            
+            # Si pas de correspondance exacte, utiliser la recherche floue
+            similar_programs = self.find_similar_programs(search_term, threshold=0.5)
+            
+            # Formater les résultats
+            results = []
+            for program in similar_programs[:5]:  # Limiter à 5 résultats
+                start_date = program.get('start_date')
+                if isinstance(start_date, str):
+                    try:
+                        start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                    except ValueError:
+                        start_date = None
+
+                end_date_str = "N/A"
+                if start_date and program.get('duration_months'):
+                    end_date = start_date + timedelta(days=program['duration_months'] * 30)
+                    end_date_str = end_date.strftime('%Y-%m-%d')
+                    
+                results.append({
+                    'id': program.get('id', str(program.get('_id', ''))),
+                    'program_name': program.get('program_name'),
+                    'location': program.get('location'),
+                    'start_date': start_date.strftime('%Y-%m-%d') if start_date else 'N/A',
+                    'end_date': end_date_str,
+                    'duration_months': program.get('duration_months'),
+                    'price': float(program.get('price', 0)),
+                    'available_spots': program.get('available_spots', 0),
+                    'description': program.get('description')
+                })
+            
+            return results
+            
+        except Exception as e:
+            logging.error(f"Error in search_programs_intelligent: {e}")
+            return []
 
 
     def close_connection(self):

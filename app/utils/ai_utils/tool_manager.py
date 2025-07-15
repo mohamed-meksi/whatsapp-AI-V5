@@ -178,9 +178,17 @@ class ToolManager:
                 if not program:
                     raise ValueError("Programme introuvable pour le lieu spécifié.")
 
+                # S'assurer que program est un dictionnaire et a un ID
+                if not isinstance(program, dict):
+                    raise ValueError("Format de programme invalide")
+
+                program_id = program.get('id')
+                if not program_id:
+                    raise ValueError("ID du programme manquant")
+
                 # Procéder à l'inscription
                 result = db_service.register_student(
-                    program['id'],
+                    program_id,  # Utiliser l'ID du programme
                     first_name,
                     last_name,
                     email,
@@ -315,33 +323,125 @@ class ToolManager:
             }, indent=2)
 
         def search_programs_func(search_term: str): 
-            programs = db_service.search_programs(search_term)
-            if not programs:
-                return json.dumps({"status": "no_programs_found", "search_term": search_term})
+            """
+            Utilise la recherche intelligente pour trouver des programmes.
+            """
+            # Utiliser la nouvelle méthode de recherche intelligente
+            programs = db_service.search_programs_intelligent(search_term)
             
-            results = []
-            for program in programs:
-                start_date = program.get('start_date')
-                if isinstance(start_date, str):
-                    try:
-                        start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-                    except ValueError:
-                        start_date = None
+            if not programs:
+                # Si aucun résultat, essayer de trouver des programmes similaires
+                similar = db_service.find_similar_programs(search_term, threshold=0.4)
+                if similar:
+                    return json.dumps({
+                        "status": "similar_found",
+                        "message": f"Aucun programme exact trouvé pour '{search_term}', mais voici des programmes similaires:",
+                        "programs": [format_program(p) for p in similar[:3]]
+                    }, ensure_ascii=False, indent=2)
+                else:
+                    return json.dumps({
+                        "status": "no_programs_found",
+                        "search_term": search_term,
+                        "message": "Aucun programme trouvé. Voici tous nos programmes disponibles:",
+                        "all_programs": get_all_programs_formatted()
+                    }, ensure_ascii=False, indent=2)
+            
+            return json.dumps({
+                "status": "success",
+                "programs": programs
+            }, ensure_ascii=False, indent=2)
 
-                end_date_str = "N/A"
-                if start_date and program.get('duration_months'):
-                    end_date = start_date + timedelta(days=program['duration_months'] * 30)
-                    end_date_str = end_date.strftime('%Y-%m-%d')
+        def format_program(program: Dict) -> Dict:
+            """Formate un programme pour l'affichage."""
+            return {
+                'program_name': program.get('program_name'),
+                'location': program.get('location'),
+                'start_date': program.get('start_date', 'N/A'),
+                'price': float(program.get('price', 0)),
+                'available_spots': program.get('available_spots', 0)
+            }
 
-                results.append({
-                    'program_name': program.get('program_name'),
-                    'location': program.get('location'),
-                    'start_date': start_date.strftime('%Y-%m-%d') if start_date else 'N/A',
-                    'end_date': end_date_str,
-                    'price': float(program.get('price', 0)),
-                    'available_spots': program.get('available_spots', 0)
-                })
-            return json.dumps({"status": "success", "programs": results}, indent=2)
+        def get_all_programs_formatted() -> List[Dict]:
+            """Retourne tous les programmes formatés."""
+            all_programs = db_service.get_all_programs()
+            return [format_program(p) for p in all_programs]
+
+        def update_user_info_progressive_func(wa_id: str, message: str):
+            """
+            Met à jour les informations utilisateur de manière progressive.
+            Détecte automatiquement le type d'information dans le message.
+            """
+            result = self.conversation_manager.update_user_info_progressive(
+                wa_id, 
+                {"text": message}
+            )
+            
+            updated = result["updated_fields"]
+            missing = result["missing_fields"]
+            
+            if updated:
+                fields_str = ", ".join(updated)
+                response = f"✅ J'ai bien enregistré : {fields_str}\n\n"
+                
+                if missing:
+                    next_field = missing[0]
+                    response += f"📝 Il me manque encore : {', '.join(missing)}\n"
+                    response += f"Pouvez-vous me donner votre {next_field} ?"
+                else:
+                    response += "✅ J'ai toutes les informations nécessaires !\n"
+                    response += "Voulez-vous vérifier vos informations avant de confirmer l'inscription ?"
+            else:
+                # Aucune information détectée
+                if missing:
+                    next_field = missing[0]
+                    response = f"Je n'ai pas pu détecter d'information dans votre message.\n"
+                    response += f"Pouvez-vous me donner votre {next_field} ?"
+                else:
+                    response = "J'ai déjà toutes vos informations !"
+            
+            return response
+
+        def verify_registration_info_progressive_func(wa_id: str) -> str:
+            """
+            Version améliorée qui ne bloque pas si des infos manquent.
+            """
+            state = self.conversation_manager.get_user_state(wa_id)
+            personal_info = state.get("personal_info", {})
+            missing = self.conversation_manager.get_missing_fields(wa_id)
+            
+            if missing:
+                response = "📋 Voici les informations que j'ai déjà :\n\n"
+                
+                if personal_info.get("full_name"):
+                    response += f"✅ Nom : {personal_info['full_name']}\n"
+                if personal_info.get("email"):
+                    response += f"✅ Email : {personal_info['email']}\n"
+                if personal_info.get("phone"):
+                    response += f"✅ Téléphone : {personal_info['phone']}\n"
+                if personal_info.get("age"):
+                    response += f"✅ Âge : {personal_info['age']} ans\n"
+                
+                response += f"\n❌ Il me manque : {', '.join(missing)}\n"
+                response += f"\nPouvez-vous me donner votre {missing[0]} ?"
+                
+                return response
+            
+            # Si toutes les infos sont là, demander confirmation
+            response = "📋 **Vérification de vos informations :**\n\n"
+            response += f"• **Nom :** {personal_info['full_name']}\n"
+            response += f"• **Email :** {personal_info['email']}\n"
+            response += f"• **Téléphone :** {personal_info['phone']}\n"
+            response += f"• **Âge :** {personal_info['age']} ans\n"
+            
+            # Ajouter les infos du programme
+            if state.get("program"):
+                response += f"• **Programme :** {state['program'].get('program_name', 'N/A')}\n"
+                response += f"• **Lieu :** {state['program'].get('location', 'N/A')}\n"
+            
+            response += "\n✅ Ces informations sont-elles correctes ?\n"
+            response += "Répondez **'oui'** pour confirmer ou **'non'** pour modifier."
+            
+            return response
 
         def verify_user_info_func(wa_id: str) -> str:
             """Vérifie et retourne les informations de l'utilisateur pour confirmation.
@@ -486,10 +586,8 @@ class ToolManager:
                     return f"ERROR: Unable to check registration: {str(e)}"
 
         # Register all the defined functions as tools
-        self.register_tool("verify_registration_info", verify_registration_info_func,
-            {"en": "Verify registration information before proceeding with student registration. (args: location: str, first_name: str, last_name: str, email: str, phone: str, age: str, wa_id: str)",
-             "fr": "Vérifier les informations d'inscription avant de procéder à l'inscription de l'étudiant. (arguments: location: str, first_name: str, last_name: str, email: str, phone: str, age: str, wa_id: str)",
-             "ar": "التحقق من معلومات التسجيل قبل المتابعة في تسجيل الطالب. (الحجج: location: str, first_name: str, last_name: str, email: str, phone: str, age: str, wa_id: str)"})
+        # Note: verify_registration_info remplacé par verify_registration_info_progressive pour une meilleure UX
+        # self.register_tool("verify_registration_info", verify_registration_info_func, ...)
 
         self.register_tool("get_bootcamp_info", get_bootcamp_info_func,
             {"en": "Get detailed information about our bootcamp programs (curriculum, duration, requirements, price, locations).",
@@ -515,6 +613,16 @@ class ToolManager:
             {"en": "Search for bootcamp programs by a given search term (e.g., program name, city). Returns JSON. (args: search_term: str)",
              "fr": "Rechercher des programmes de bootcamp par un terme de recherche donné (par exemple, nom de programme, ville). Retourne du JSON. (arguments: search_term: str)",
              "ar": "البحث عن برامج المعسكر التدريبي حسب مصطلح بحث معين (مثل اسم الموقع، المدينة). تعيد JSON. (الحجج: search_term: str)"})
+
+        self.register_tool("update_user_info_progressive", update_user_info_progressive_func,
+            {"en": "Update user information progressively based on the message. Detects the type of information automatically. (args: wa_id: str, message: str)",
+             "fr": "Mettre à jour les informations utilisateur progressivement en fonction du message. Détecte automatiquement le type d'information. (arguments: wa_id: str, message: str)",
+             "ar": "تحديث معلومات المستخدم بشكل تدريجي بناءً على الرسالة. يكتشف نوع المعلومات تلقائياً. (الحجج: wa_id: str, message: str)"})
+
+        self.register_tool("verify_registration_info_progressive", verify_registration_info_progressive_func,
+            {"en": "Advanced version that does not block if some info is missing. (args: wa_id: str)",
+             "fr": "Version avancée qui ne bloque pas si des informations manquent. (arguments: wa_id: str)",
+             "ar": "إصدار متقدم لا يحظر إذا كانت بعض المعلومات غير موجودة. (الحجج: wa_id: str)"})
 
         self.register_tool("verify_user_info", verify_user_info_func,
             {"en": "Verify user information before registration. (args: wa_id: str)",
