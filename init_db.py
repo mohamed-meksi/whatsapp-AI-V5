@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration pour MongoDB local
-MONGO_URI = os.getenv("MONGO_URI")
-MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "geeks_institute_db")
+MONGO_URI = os.getenv("MONGODB")
+MONGO_DB_NAME = os.getenv("DATABASE", "geeks_institute_db")
 
 # Define the path to your sessions.json file relative to this script
 SESSIONS_DATA_PATH = os.path.join(os.path.dirname(__file__), 'data', 'sessions.json')

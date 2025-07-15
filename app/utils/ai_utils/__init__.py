@@ -12,5 +12,6 @@ __all__ = [
     'detect_language_from_message',
     'generate_response',
     'check_if_thread_exists',
-    'store_thread'
+    'store_thread',
+
 ] 

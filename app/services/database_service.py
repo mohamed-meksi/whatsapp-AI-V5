@@ -4,12 +4,13 @@ from bson import ObjectId
 from dotenv import load_dotenv
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+import logging
 
 load_dotenv()
 
 # MongoDB Configuration
 MONGODB_URL = os.getenv('MONGODB')
-DATABASE_NAME = os.getenv('DATABASE')
+DATABASE_NAME = os.getenv('DATABASE_1')
 
 class DatabaseService:
     def __init__(self):
@@ -28,6 +29,7 @@ class DatabaseService:
     def _create_indexes(self):
         self.programs_collection.create_index([("program_name", "text"), ("location", "text")])
         self.registrations_collection.create_index("email", unique=True)
+        self.registrations_collection.create_index("wa_id", unique=True)  
         self.registrations_collection.create_index("program_id")
 
     def _convert_objectid(self, doc: Dict) -> Dict:
@@ -44,16 +46,27 @@ class DatabaseService:
             print(f"Error getting all programs: {e}")
             return []
 
-    # MODIFICATION: This function can be more precise if program_name is also provided
+    #  This function can be more precise if program_name is also provided
     def get_program_by_name_and_location(self, program_name: str, location: str) -> Optional[Dict]:
         """
         Récupère les détails du programme par nom de programme ET par lieu.
         """
         try:
+            # Utiliser une recherche exacte au lieu de regex pour éviter les problèmes avec les caractères spéciaux
             program = self.programs_collection.find_one({
-                "program_name": {"$regex": program_name, "$options": "i"},
-                "location": {"$regex": location, "$options": "i"}
+                "program_name": program_name,
+                "location": location
             })
+            
+            # Si la recherche exacte ne donne rien, essayer une recherche insensible à la casse
+            if not program:
+                program = self.programs_collection.find_one({
+                    "$and": [
+                        {"program_name": {"$eq": program_name}},
+                        {"location": {"$eq": location}}
+                    ]
+                })
+            
             return self._convert_objectid(program) if program else None
         except Exception as e:
             print(f"Error getting program by name and location: {e}")
@@ -63,10 +76,17 @@ class DatabaseService:
     def get_program_by_location(self, location_name: str) -> Optional[Dict]:
         """Récupère les détails du programme par le nom du lieu."""
         try:
-            # This will still return only one if multiple programs are in the same city
+            # Recherche exacte d'abord
             program = self.programs_collection.find_one({
-                "location": {"$regex": location_name, "$options": "i"}
+                "location": location_name
             })
+            
+            # Si pas de résultat, essayer une recherche insensible à la casse
+            if not program:
+                program = self.programs_collection.find_one({
+                    "location": {"$eq": location_name}
+                })
+            
             return self._convert_objectid(program) if program else None
         except Exception as e:
             print(f"Error getting program by location: {e}")
@@ -80,62 +100,134 @@ class DatabaseService:
             print(f"Error getting program by ID: {e}")
             return None
 
-    def register_student(self, program_id: str, first_name: str, last_name: str,
-                         email: str, phone: str, age: int) -> Dict:
+    def verify_registration_possibility(self, program_id: str, email: str, wa_id: str) -> None:
+        """Vérifie si l'inscription est possible."""
         try:
+            # Vérifier si le programme existe et a des places disponibles
             program = self.programs_collection.find_one({"_id": ObjectId(program_id)})
             if not program:
-                raise ValueError("Program/Session not found")
-
-            if program.get('available_spots', 0) <= 0:
-                raise ValueError("No spots available for this program")
-
-            existing_registration = self.registrations_collection.find_one({"email": email})
+                logging.error(f"Programme {program_id} non trouvé")
+                raise ValueError("Programme introuvable.")
+            
+            if program.get("available_spots", 0) <= 0:
+                logging.error(f"Plus de places disponibles pour le programme {program_id}")
+                raise ValueError("Plus de places disponibles pour ce programme.")
+            
+            # Vérifier si l'utilisateur est déjà inscrit (par wa_id)
+            existing_registration = self.registrations_collection.find_one({"wa_id": wa_id})
             if existing_registration:
-                raise ValueError("Email already registered")
+                logging.error(f"wa_id {wa_id} déjà inscrit")
+                raise ValueError("Ce numéro WhatsApp est déjà inscrit à un programme.")
+                
+            logging.info(f"Vérification réussie pour wa_id {wa_id} et programme {program_id}")
+            
+        except Exception as e:
+            logging.error(f"Error in verify_registration_possibility: {str(e)}")
+            raise ValueError(str(e))
 
-            registration_data = {
-                "program_id": ObjectId(program_id),
+    def get_user_registration_by_wa_id(self, wa_id: str) -> Optional[Dict]:
+        """Récupère l'inscription existante d'un utilisateur par son wa_id."""
+        try:
+            registration = self.registrations_collection.find_one({"wa_id": wa_id})
+            if not registration:
+                return None
+            
+            # Récupérer les informations du programme associé
+            program = self.programs_collection.find_one({"_id": ObjectId(registration["program_id"])})
+            
+            # Convertir les ObjectId et ajouter les informations du programme
+            registration = self._convert_objectid(registration)
+            if program:
+                registration["program_info"] = {
+                    "program_name": program.get("program_name"),
+                    "location": program.get("location"),
+                    "start_date": program.get("start_date"),
+                    "duration_months": program.get("duration_months"),
+                    "price": program.get("price")
+                }
+            
+            logging.info(f"Inscription trouvée pour wa_id {wa_id}")
+            return registration
+            
+        except Exception as e:
+            logging.error(f"Error getting user registration for wa_id {wa_id}: {str(e)}")
+            return None
+
+    def register_student(self, program_id: str, first_name: str, last_name: str, email: str, phone: str, age: int, wa_id: str) -> dict:
+        """Inscrit un étudiant à un programme."""
+        try:
+            # Vérifier si l'inscription est possible
+            self.verify_registration_possibility(program_id, email, wa_id)
+            
+            # Créer l'inscription
+            registration = {
+                "program_id": program_id,
                 "first_name": first_name,
                 "last_name": last_name,
                 "email": email,
                 "phone": phone,
                 "age": age,
-                "registration_date": datetime.utcnow(),
-                "status": "pending"
+                "wa_id": wa_id,
+                "status": "pending",
+                "registration_date": datetime.utcnow()
             }
-
-            result = self.registrations_collection.insert_one(registration_data)
-
-            updated_spots = program['available_spots'] - 1
-            self.programs_collection.update_one(
+            
+            logging.info(f"Tentative d'inscription pour wa_id {wa_id} au programme {program_id}")
+            
+            # Insérer l'inscription
+            result = self.registrations_collection.insert_one(registration)
+            if not result.inserted_id:
+                raise ValueError("Échec de l'insertion dans la base de données")
+            
+            logging.info(f"Inscription réussie avec ID: {result.inserted_id}")
+            
+            # Mettre à jour le nombre de places disponibles
+            update_result = self.programs_collection.update_one(
                 {"_id": ObjectId(program_id)},
-                {"$set": {"available_spots": updated_spots}}
+                {"$inc": {"available_spots": -1}}
             )
-
-            registration = self.registrations_collection.find_one({"_id": result.inserted_id})
-            registration = self._convert_objectid(registration)
-            registration['program_id'] = program_id
-            registration['spots_remaining'] = updated_spots
-            registration['location_name'] = program.get('location', 'N/A')
-
-            return registration
-
-        except ValueError as ve:
-            raise ve
+            
+            if not update_result.modified_count:
+                logging.error(f"Échec de la mise à jour des places disponibles pour le programme {program_id}")
+                # Annuler l'inscription si la mise à jour échoue
+                self.registrations_collection.delete_one({"_id": result.inserted_id})
+                raise ValueError("Échec de la mise à jour des places disponibles")
+            
+            # Récupérer le programme mis à jour
+            updated_program = self.programs_collection.find_one({"_id": ObjectId(program_id)})
+            if not updated_program:
+                raise ValueError("Programme non trouvé après mise à jour")
+            
+            logging.info(f"Inscription complétée avec succès pour wa_id {wa_id}")
+            
+            return {
+                "registration_id": str(result.inserted_id),
+                "spots_remaining": updated_program.get("available_spots", 0)
+            }
+            
         except Exception as e:
-            print(f"Error registering student: {e}")
-            raise ValueError(f"Registration failed: {str(e)}")
+            logging.error(f"Error in register_student: {str(e)}")
+            raise ValueError(str(e))
 
     def search_programs(self, search_term: str) -> List[Dict]:
         """Recherche des programmes par nom de programme ou lieu."""
         try:
+            # Recherche exacte d'abord
             programs = list(self.programs_collection.find({
                 "$or": [
-                    {"program_name": {"$regex": search_term, "$options": "i"}},
-                    {"location": {"$regex": search_term, "$options": "i"}}
+                    {"program_name": search_term},
+                    {"location": search_term}
                 ]
             }))
+            
+            # Si pas de résultats, essayer une recherche insensible à la casse
+            if not programs:
+                programs = list(self.programs_collection.find({
+                    "$or": [
+                        {"program_name": {"$eq": search_term}},
+                        {"location": {"$eq": search_term}}
+                    ]
+                }))
 
             result = []
             for program in programs:
@@ -250,6 +342,7 @@ class DatabaseService:
         self.db.conversations.create_index([("user_id", 1), ("timestamp", -1)])
         self.db.user_sessions.create_index("user_id", unique=True)
         self.db.user_sessions.create_index("last_updated")
+        
     def format_program_info_for_chat(self) -> str:
         try:
             programs = self.get_all_programs()
@@ -261,15 +354,20 @@ class DatabaseService:
             
             for i, program in enumerate(programs, 1):
                 start_date = program.get('start_date')
-                if isinstance(start_date, str):
+                if isinstance(start_date, datetime):
+                    start_date_str = start_date.strftime('%Y-%m-%d')
+                elif isinstance(start_date, str):
                     try:
                         start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                        start_date_str = start_date.strftime('%Y-%m-%d')
                     except ValueError:
-                        start_date = None
+                        start_date_str = 'N/A'
+                else:
+                    start_date_str = 'N/A'
 
                 message += f"**{i}. {program.get('program_name', 'N/A')}**\n"
                 message += f"📍 Lieu : {program.get('location', 'N/A')}\n"
-                message += f"📅 Début : {start_date.strftime('%Y-%m-%d') if start_date else 'N/A'}\n"
+                message += f"📅 Début : {start_date_str}\n"
                 message += f"⏳ Durée : {program.get('duration_months', 'N/A')} mois\n"
                 message += f"💰 Prix : {program.get('price', 0):,.0f} MAD\n"
                 message += f"🎫 Places disponibles : {program.get('available_spots', 0)}\n"
