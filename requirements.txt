@@ -1,8 +1,8 @@
 flask
-python-dotenv
+python-dotenv==1.0.0
 aiohttp
-requests
-google-generativeai
+requests==2.31.0
+google-generativeai==0.3.2
 asyncpg
 alembic
 langdetect

@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration pour MongoDB local
-MONGO_URI = os.getenv("MONGO_URI")
-MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "geeks_institute_db")
+MONGO_URI = os.getenv("MONGODB")
+MONGO_DB_NAME = os.getenv("DATABASE", "geeks_institute_db")
 
 # Define the path to your sessions.json file relative to this script
 SESSIONS_DATA_PATH = os.path.join(os.path.dirname(__file__), 'data', 'sessions.json')
@@ -22,202 +22,56 @@ print("-" * 50)
 
 def init_db():
     """
-    Initializes the local MongoDB database.
-    Drops existing 'students', 'conversations', 'sessions', and 'liste_numeros' collections for a clean slate,
-    then inserts sample bootcamp session data and authorized phone numbers.
-    Ensures indexes on relevant collections.
+    Fonction principale d'initialisation de la base de données
     """
     client = None
     try:
-        # Configuration pour MongoDB local
-        client = MongoClient(
-            MONGO_URI,
-            serverSelectionTimeoutMS=5000,  # 5 secondes timeout
-            connectTimeoutMS=10000,         # 10 secondes pour la connexion
-            socketTimeoutMS=10000           # 10 secondes pour les sockets
-        )
-        
-        # Test de connexion
-        client.admin.command('ping')
+        # Connexion à MongoDB
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         db = client[MONGO_DB_NAME]
-
-        print(f"✅ Connected to local MongoDB database: {MONGO_DB_NAME}")
-        print(f"📍 Server info: {client.server_info()['version']}")
-
-        # Drop existing collections for a clean setup (useful during development)
-        print("\n🗑️  Dropping existing collections...")
-        collections_to_drop = ['students', 'conversations', 'sessions', 'liste_numeros']
         
-        existing_collections = db.list_collection_names()
-        print(f"📋 Existing collections: {existing_collections}")
+        # Création des collections si elles n'existent pas
+        if "programs" not in db.list_collection_names():
+            db.create_collection("programs")
+            print("✅ Collection 'programs' créée")
         
-        for collection_name in collections_to_drop:
-            if collection_name in existing_collections:
-                db[collection_name].drop()
-                print(f"   ✅ Collection '{collection_name}' dropped.")
-            else:
-                print(f"   ℹ️  Collection '{collection_name}' doesn't exist, skipping.")
-
-        # Create collections explicitly
-        print("\n📁 Creating collections...")
-        db.create_collection('students')
-        db.create_collection('sessions')
-        db.create_collection('liste_numeros')
-        print("   ✅ Collections 'students', 'sessions', and 'liste_numeros' created.")
-
-        # Ensure indexes for performance and data integrity
-        print("\n🔍 Creating indexes...")
-        db.students.create_index("whatsapp_id", unique=True)
-        print("   ✅ Unique index on students.whatsapp_id")
+        if "registrations" not in db.list_collection_names():
+            db.create_collection("registrations")
+            print("✅ Collection 'registrations' créée")
         
-        db.sessions.create_index([("program_name", 1), ("location", 1)])
-        print("   ✅ Compound index on sessions (program_name, location)")
-        
-        db.liste_numeros.create_index("numero", unique=True)
-        print("   ✅ Unique index on liste_numeros.numero")
-        
-        db.liste_numeros.create_index("actif")
-        print("   ✅ Index on liste_numeros.actif")
-
-        # Sample bootcamp sessions data
-        print("\n📚 Inserting sample sessions...")
-        sessions_data = [
-            {
-                "program_name": "Développement Web (Full-Stack)",
-                "location": "Casablanca",
-                "start_date": "2025-09-01T09:00:00Z",
-                "duration_months": 8,
-                "price": 45000,
-                "available_spots": 20,
-                "requirements": ["Logique de base en programmation", "Motivation"],
-                "description": "Apprenez à construire des applications web complètes, du frontend au backend, avec les technologies les plus demandées.",
-                "created_at": datetime.now(),
-                "updated_at": datetime.now()
-            },
-            {
-                "program_name": "Développement Mobile",
-                "location": "Rabat",
-                "start_date": "2025-10-15T09:00:00Z",
-                "duration_months": 8,
-                "price": 48000,
-                "available_spots": 18,
-                "requirements": ["Connaissances en programmation orientée objet", "Créativité"],
-                "description": "Maîtrisez le développement d'applications natives iOS et Android, ainsi que les frameworks hybrides populaires.",
-                "created_at": datetime.now(),
-                "updated_at": datetime.now()
-            },
-            {
-                "program_name": "Data Science & Intelligence Artificielle",
-                "location": "Casablanca",
-                "start_date": "2025-11-01T09:00:00Z",
-                "duration_months": 10,
-                "price": 52000,
-                "available_spots": 15,
-                "requirements": ["Mathématiques de base", "Logique de programmation"],
-                "description": "Maîtrisez l'analyse de données, le machine learning et l'IA avec Python et les outils modernes.",
-                "created_at": datetime.now(),
-                "updated_at": datetime.now()
-            }
-        ]
-
-        # Sample authorized phone numbers data
-        print("📱 Inserting authorized phone numbers...")
-        numeros_autorises_data = [
-            {
-                "numero": "+212643370003",
-                "nom": "Mohamed Meksi",
-                "description": "Étudiant potentiel - Programme Web Development",
-                "date_ajout": datetime.now(),
-                "actif": True,
-                "type_utilisateur": "etudiant",
-                "notes": "Contact initial via site web"
-            },
-            {
-                "numero": "+212700000002", 
-                "nom": "Fatima Zahra",
-                "description": "Étudiante potentielle - Programme Mobile",
-                "date_ajout": datetime.now(),
-                "actif": True,  # Changé à True pour les tests
-                "type_utilisateur": "etudiant",
-                "notes": "Recommandée par un ancien étudiant"
-            },
-            {
-                "numero": "+212600000001",
-                "nom": "Ahmed Benali",
-                "description": "Administrateur système",
-                "date_ajout": datetime.now(),
-                "actif": True,
-                "type_utilisateur": "admin",
-                "notes": "Accès administrateur complet"
-            },
-            {
-                "numero": "+212500000005",
-                "nom": "Khadija Alami",
-                "description": "Conseillère pédagogique",
-                "date_ajout": datetime.now(),
-                "actif": True,
-                "type_utilisateur": "staff",
-                "notes": "Support pédagogique et orientation"
-            }
-        ]
-
-        # Insert sample sessions
-        if sessions_data:
-            result = db.sessions.insert_many(sessions_data)
-            print(f"   ✅ {len(result.inserted_ids)} sessions inserted successfully")
-        else:
-            print("   ⚠️  No sample sessions to insert")
-
-        # Insert authorized phone numbers
-        if numeros_autorises_data:
-            result = db.liste_numeros.insert_many(numeros_autorises_data)
-            print(f"   ✅ {len(result.inserted_ids)} authorized numbers inserted successfully")
+        if "conversations" not in db.list_collection_names():
+            db.create_collection("conversations")
+            print("✅ Collection 'conversations' créée")
             
-            # Display the authorized numbers for reference
-            print(f"\n📱 Numéros autorisés ajoutés:")
-            print("=" * 70)
-            for numero in numeros_autorises_data:
-                status = "✅ Actif" if numero['actif'] else "❌ Inactif"
-                print(f"  {numero['numero']} - {numero['nom']}")
-                print(f"     Type: {numero['type_utilisateur']} | Status: {status}")
-                print(f"     Description: {numero['description']}")
-                print("-" * 50)
-        else:
-            print("   ⚠️  No authorized phone numbers to insert")
-
-        # Statistics
-        print(f"\n📊 Database Statistics:")
-        print(f"   📚 Sessions: {db.sessions.count_documents({})}")
-        print(f"   👤 Students: {db.students.count_documents({})}")
-        print(f"   📱 Authorized numbers: {db.liste_numeros.count_documents({})}")
-        print(f"   📱 Active numbers: {db.liste_numeros.count_documents({'actif': True})}")
-
-        print(f"\n🎉 Local MongoDB initialization complete!")
-        print(f"🏠 Database: {MONGO_DB_NAME}")
-        print(f"🔗 Connection: {MONGO_URI}")
-
-    except ConnectionFailure as e:
-        print(f"❌ ERROR: MongoDB connection failed.")
-        print(f"   Please ensure MongoDB is running locally on port 27017")
-        print(f"   You can start MongoDB with: mongod --dbpath /your/db/path")
-        print(f"   Details: {e}")
-    except OperationFailure as e:
-        print(f"❌ ERROR: MongoDB operation failed during initialization.")
-        print(f"   Details: {e}")
-    except FileNotFoundError:
-        print(f"⚠️  WARNING: sessions.json not found at {SESSIONS_DATA_PATH}")
-        print(f"   Using hardcoded sample data instead")
-    except json.JSONDecodeError as e:
-        print(f"❌ ERROR: Failed to decode sessions.json")
-        print(f"   Please check the JSON file format. Details: {e}")
+        if "liste_numeros" not in db.list_collection_names():
+            db.create_collection("liste_numeros")
+            print("✅ Collection 'liste_numeros' créée")
+            
+        if "user_sessions" not in db.list_collection_names():
+            db.create_collection("user_sessions")
+            print("✅ Collection 'user_sessions' créée")
+        
+        # Création des index
+        db.programs.create_index([("program_name", "text"), ("location", "text")])
+        db.registrations.create_index("email", unique=True)
+        db.registrations.create_index("wa_id", unique=True)
+        db.registrations.create_index("program_id")
+        db.liste_numeros.create_index("numero", unique=True)
+        db.user_sessions.create_index("user_id", unique=True)
+        print("✅ Index créés avec succès")
+        
+        # Initialiser les données de test
+        db_service = DatabaseService()
+        db_service.init_test_data()
+        print("✅ Données de test initialisées")
+        
+        print("\n✨ Base de données initialisée avec succès!")
+        
     except Exception as e:
-        print(f"❌ UNEXPECTED ERROR occurred during MongoDB initialization: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Erreur lors de l'initialisation de la base de données: {e}")
     finally:
         if client:
             client.close()
-            print("\n🔐 MongoDB connection closed.")
 
 def add_phone_number(numero, nom, description="", type_utilisateur="etudiant", notes=""):
     """
