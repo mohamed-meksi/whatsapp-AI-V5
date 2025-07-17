@@ -50,8 +50,10 @@ print("━" * 70)
 
 from app import create_app
 
+# Créer l'application au niveau global pour Gunicorn
+app = create_app()
+
 if __name__ == "__main__":
-    app = create_app()
     port = 8000
     
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🌐 Serveur démarré sur le port {port}")
