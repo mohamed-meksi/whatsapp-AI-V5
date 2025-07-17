@@ -72,24 +72,71 @@ class DatabaseService:
             print(f"Error getting program by name and location: {e}")
             return None
 
-    # Keep get_program_by_location if it's used elsewhere for broader searches
+    def init_test_data(self):
+        """Initialise des données de test si la base de données est vide."""
+        try:
+            # Vérifier si nous avons déjà des programmes
+            if self.programs_collection.count_documents({}) > 0:
+                logging.info("Des programmes existent déjà dans la base de données")
+                return
+
+            # Données de test pour les programmes
+            test_programs = [
+                {
+                    "program_name": "Data Science & Intelligence Artificielle",
+                    "location": "Casablanca",
+                    "start_date": datetime(2025, 11, 1),
+                    "duration_months": 6,
+                    "price": 8999.00,
+                    "available_spots": 20,
+                    "description": "Formation intensive en Data Science et IA",
+                    "requirements": "Connaissances de base en programmation"
+                },
+                {
+                    "program_name": "Full Stack Web Development",
+                    "location": "Rabat",
+                    "start_date": datetime(2025, 12, 1),
+                    "duration_months": 6,
+                    "price": 8999.00,
+                    "available_spots": 15,
+                    "description": "Formation complète en développement web",
+                    "requirements": "Aucun prérequis"
+                }
+            ]
+
+            # Insérer les programmes
+            for program in test_programs:
+                self.programs_collection.insert_one(program)
+                logging.info(f"Programme ajouté: {program['program_name']} à {program['location']}")
+
+            logging.info("Données de test initialisées avec succès")
+            
+        except Exception as e:
+            logging.error(f"Erreur lors de l'initialisation des données de test: {e}")
+            raise e
+
     def get_program_by_location(self, location_name: str) -> Optional[Dict]:
         """Récupère les détails du programme par le nom du lieu."""
         try:
             # Recherche exacte d'abord
             program = self.programs_collection.find_one({
-                "location": location_name
+                "location": {"$regex": f"^{location_name}$", "$options": "i"}
             })
             
             # Si pas de résultat, essayer une recherche insensible à la casse
             if not program:
                 program = self.programs_collection.find_one({
-                    "location": {"$eq": location_name}
+                    "location": {"$regex": location_name, "$options": "i"}
                 })
             
-            return self._convert_objectid(program) if program else None
+            if program:
+                return self._convert_objectid(program)
+            
+            logging.error(f"Aucun programme trouvé pour le lieu: {location_name}")
+            return None
+            
         except Exception as e:
-            print(f"Error getting program by location: {e}")
+            logging.error(f"Error getting program by location: {e}")
             return None
 
     def get_program_by_id(self, program_id: str) -> Optional[Dict]:
@@ -167,9 +214,16 @@ class DatabaseService:
             # Vérifier si l'inscription est possible
             self.verify_registration_possibility(program_id, email, wa_id)
             
+            # Convertir program_id en ObjectId pour l'utilisation dans MongoDB
+            try:
+                program_object_id = ObjectId(program_id)
+            except Exception as e:
+                logging.error(f"Erreur de conversion program_id vers ObjectId: {e}")
+                raise ValueError(f"ID de programme invalide: {program_id}")
+            
             # Créer l'inscription
             registration = {
-                "program_id": program_id,
+                "program_id": program_object_id,  # Utiliser ObjectId pour MongoDB
                 "first_name": first_name,
                 "last_name": last_name,
                 "email": email,
@@ -191,7 +245,7 @@ class DatabaseService:
             
             # Mettre à jour le nombre de places disponibles
             update_result = self.programs_collection.update_one(
-                {"_id": ObjectId(program_id)},
+                {"_id": program_object_id},  # Utiliser l'ObjectId déjà converti
                 {"$inc": {"available_spots": -1}}
             )
             
@@ -202,20 +256,22 @@ class DatabaseService:
                 raise ValueError("Échec de la mise à jour des places disponibles")
             
             # Récupérer le programme mis à jour
-            updated_program = self.programs_collection.find_one({"_id": ObjectId(program_id)})
-            if not updated_program:
-                raise ValueError("Programme non trouvé après mise à jour")
+            updated_program = self.programs_collection.find_one({"_id": program_object_id})
             
-            logging.info(f"Inscription complétée avec succès pour wa_id {wa_id}")
+            # Préparer la réponse avec l'inscription créée
+            registration_with_id = registration.copy()
+            registration_with_id["_id"] = result.inserted_id
+            registration_response = self._convert_objectid(registration_with_id)
+            registration_response["spots_remaining"] = updated_program.get("available_spots", 0)
+            registration_response["location_name"] = updated_program.get("location", "N/A")
             
-            return {
-                "registration_id": str(result.inserted_id),
-                "spots_remaining": updated_program.get("available_spots", 0)
-            }
-            
+            return registration_response
+
+        except ValueError as ve:
+            raise ve
         except Exception as e:
-            logging.error(f"Error in register_student: {str(e)}")
-            raise ValueError(str(e))
+            logging.error(f"Error registering student: {e}")
+            raise ValueError(f"Registration failed: {str(e)}")
 
     def search_programs(self, search_term: str) -> List[Dict]:
         """Recherche des programmes par nom de programme ou lieu."""

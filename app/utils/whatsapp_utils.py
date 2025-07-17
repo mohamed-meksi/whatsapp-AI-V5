@@ -187,7 +187,7 @@ def process_whatsapp_message(body):
         
         # Traitement et envoi
         formatted_response = process_text_for_whatsapp(response)
-        data = get_text_message_input(current_app.config["RECIPIENT_WAID"], formatted_response)
+        data = get_text_message_input(wa_id, formatted_response)
         send_result = send_message(data)
         
         debug_separator("MESSAGE TRAITÉ", "INFO")

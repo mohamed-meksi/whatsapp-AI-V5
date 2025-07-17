@@ -28,17 +28,37 @@ class ToolManager:
         )
         
         # Fonction wrapper pour set_user_step qui force l'utilisation des arguments nommés
-        def set_user_step_wrapper(**kwargs):
-            if 'user_id' not in kwargs or 'step' not in kwargs:
+        def set_user_step_wrapper(*args, **kwargs):
+            """
+            Wrapper flexible pour set_user_step qui accepte les arguments positionnels et nommés.
+            """
+            user_id = None
+            step = None
+            
+            # Gestion des arguments nommés
+            if 'user_id' in kwargs and 'step' in kwargs:
+                user_id = kwargs['user_id']
+                step = kwargs['step']
+            # Gestion des arguments positionnels
+            elif len(args) >= 2:
+                user_id = args[0]
+                step = args[1]
+            # Gestion du cas mixte (parfois le parsing duplique user_id)
+            elif len(args) >= 3:
+                user_id = args[0]  # Premier argument
+                step = args[2]     # Troisième argument (le deuxième est souvent un doublon)
+            
+            if not user_id or not step:
                 raise ValueError("Les arguments 'user_id' et 'step' sont requis")
-            return self.conversation_manager.set_user_step(user_id=kwargs['user_id'], step=kwargs['step'])
+            
+            return self.conversation_manager.set_user_step(user_id=user_id, step=step)
         
         # Enregistrement de set_user_step avec le wrapper
         self.register_tool("set_user_step", 
-            set_user_step_wrapper,
+    set_user_step_wrapper,
             {"en": "Set the current step for a user in the conversation flow. Format: {set_user_step:user_id=USER_ID, step=STEP_NAME}",
-             "fr": "Définir l'étape actuelle pour un utilisateur dans le flux de conversation. Format: {set_user_step:user_id=USER_ID, step=STEP_NAME}",
-             "ar": "تعيين الخطوة الحالية للمستخدم في تدفق المحادثة. Format: {set_user_step:user_id=USER_ID, step=STEP_NAME}"})
+            "fr": "Définir l'étape actuelle pour un utilisateur dans le flux de conversation. Format: {set_user_step:user_id=USER_ID, step=STEP_NAME}",
+            "ar": "تعيين الخطوة الحالية للمستخدم في تدفق المحادثة. Format: {set_user_step:user_id=USER_ID, step=STEP_NAME}"})
         
         self.register_tool("advance_to_next_step", self.conversation_manager.advance_step,
                             {"en": "Advance the user to the next logical step in the conversation flow.",
@@ -168,7 +188,15 @@ class ToolManager:
                 # Récupérer l'état de l'utilisateur pour vérifier la location
                 user_state = self.conversation_manager.get_user_state(wa_id)
                 program_info = user_state.get("program") if user_state else None
-                stored_location = program_info.get("location", location) if program_info else location
+                
+                # FIX: Vérifier si program_info est un dictionnaire ou une chaîne
+                if isinstance(program_info, dict):
+                    stored_location = program_info.get("location", location)
+                elif isinstance(program_info, str):
+                    # Si program_info est une chaîne, utiliser la location passée en paramètre
+                    stored_location = location
+                else:
+                    stored_location = location
                 
                 # Utiliser la location stockée si elle existe
                 program_location = stored_location if stored_location else location
@@ -176,59 +204,65 @@ class ToolManager:
                 # Trouver le programme par lieu
                 program = db_service.get_program_by_location(program_location)
                 if not program:
+                    logging.error(f"Aucun programme trouvé pour le lieu: {program_location}")
                     raise ValueError("Programme introuvable pour le lieu spécifié.")
 
                 # S'assurer que program est un dictionnaire et a un ID
                 if not isinstance(program, dict):
+                    logging.error(f"Format de programme invalide pour le lieu {program_location}: {type(program)}")
                     raise ValueError("Format de programme invalide")
 
                 program_id = program.get('id')
                 if not program_id:
+                    logging.error(f"ID du programme manquant pour le programme: {program}")
                     raise ValueError("ID du programme manquant")
 
-                # Procéder à l'inscription
+                # Procéder à l'inscription avec le wa_id
                 result = db_service.register_student(
-                    program_id,  # Utiliser l'ID du programme
+                    program_id,  # ID du programme
                     first_name,
                     last_name,
                     email,
                     phone,
                     age_int,
-                    wa_id
+                    wa_id  # Ajouter le wa_id ici
                 )
 
-                # Si l'inscription est réussie, result contiendra les détails de l'inscription
-                detected_language = self.conversation_manager.detected_language
+                # Si l'inscription est réussie, result sera un dictionnaire
+                if not isinstance(result, dict):
+                    raise ValueError("Format de résultat d'inscription invalide")
+
+                detected_language = getattr(self.conversation_manager, 'detected_language', 'en')
                 if detected_language == "fr":
                     return (f"✅ Félicitations ! Votre inscription a été confirmée.\n\n"
-                           f"📝 Détails de l'inscription :\n"
-                           f"- Nom : {first_name} {last_name}\n"
-                           f"- Programme : {program.get('program_name', 'N/A')} à {location}\n"
-                           f"- Email : {email}\n"
-                           f"- Téléphone : {phone}\n"
-                           f"- Places restantes : {result.get('spots_remaining', 0)}\n\n"
-                           f"📧 Vous recevrez bientôt un email avec plus d'informations.")
+                        f"📝 Détails de l'inscription :\n"
+                        f"- Nom : {first_name} {last_name}\n"
+                        f"- Programme : {program.get('program_name', 'N/A')} à {location}\n"
+                        f"- Email : {email}\n"
+                        f"- Téléphone : {phone}\n"
+                        f"- Places restantes : {result.get('spots_remaining', 0)}\n\n"
+                        f"📧 Vous recevrez bientôt un email avec plus d'informations.")
                 elif detected_language == "ar":
                     return (f"✅ تهانينا! تم تأكيد تسجيلك.\n\n"
-                           f"📝 تفاصيل التسجيل:\n"
-                           f"- الاسم: {first_name} {last_name}\n"
-                           f"- البرنامج: {program.get('program_name', 'N/A')} في {location}\n"
-                           f"- البريد الإلكتروني: {email}\n"
-                           f"- الهاتف: {phone}\n"
-                           f"- الأماكن المتبقية: {result.get('spots_remaining', 0)}\n\n"
-                           f"📧 ستتلقى قريباً بريداً إلكترونياً يحتوي على مزيد من المعلومات.")
+                        f"📝 تفاصيل التسجيل:\n"
+                        f"- الاسم: {first_name} {last_name}\n"
+                        f"- البرنامج: {program.get('program_name', 'N/A')} في {location}\n"
+                        f"- البريد الإلكتروني: {email}\n"
+                        f"- الهاتف: {phone}\n"
+                        f"- الأماكن المتبقية: {result.get('spots_remaining', 0)}\n\n"
+                        f"📧 ستتلقى قريباً بريداً إلكترونياً يحتوي على مزيد من المعلومات.")
                 else:
                     return (f"✅ Congratulations! Your registration has been confirmed.\n\n"
-                           f"📝 Registration details:\n"
-                           f"- Name: {first_name} {last_name}\n"
-                           f"- Program: {program.get('program_name', 'N/A')} in {location}\n"
-                           f"- Email: {email}\n"
-                           f"- Phone: {phone}\n"
-                           f"- Spots remaining: {result.get('spots_remaining', 0)}\n\n"
-                           f"📧 You will receive an email with more information soon.")
+                        f"📝 Registration details:\n"
+                        f"- Name: {first_name} {last_name}\n"
+                        f"- Program: {program.get('program_name', 'N/A')} in {location}\n"
+                        f"- Email: {email}\n"
+                        f"- Phone: {phone}\n"
+                        f"- Spots remaining: {result.get('spots_remaining', 0)}\n\n"
+                        f"📧 You will receive an email with more information soon.")
 
             except ValueError as ve:
-                detected_language = self.conversation_manager.detected_language
+                detected_language = getattr(self.conversation_manager, 'detected_language', 'en')
                 error_message = str(ve)
                 
                 if "Programme introuvable pour le lieu spécifié" in error_message:
@@ -239,7 +273,7 @@ class ToolManager:
                     else:
                         return "Registration failed: Program/Session not found for the specified location."
                 
-                elif "No spots available" in error_message:
+                elif "No spots available" in error_message or "Plus de places disponibles" in error_message:
                     if detected_language == "fr":
                         return "L'inscription a échoué : Plus de places disponibles pour ce programme."
                     elif detected_language == "ar":
@@ -247,21 +281,13 @@ class ToolManager:
                     else:
                         return "Registration failed: No spots available for this program."
                 
-                elif "Email already registered" in error_message:
+                elif "Email already registered" in error_message or "wa_id" in error_message and "déjà inscrit" in error_message:
                     if detected_language == "fr":
-                        return "L'inscription a échoué : Cet e-mail est déjà enregistré."
+                        return "L'inscription a échoué : Ce compte est déjà enregistré."
                     elif detected_language == "ar":
-                        return "فشل التسجيل: البريد الإلكتروني مسجل بالفعل."
+                        return "فشل التسجيل: هذا الحساب مسجل بالفعل."
                     else:
-                        return "Registration failed: Email already registered."
-                
-                elif "Age must be a valid number" in error_message:
-                    if detected_language == "fr":
-                        return "L'inscription a échoué : L'âge doit être un nombre valide."
-                    elif detected_language == "ar":
-                        return "فشل التسجيل: يجب أن يكون العمر رقماً صالحاً."
-                    else:
-                        return "Registration failed: Age must be a valid number."
+                        return "Registration failed: This account is already registered."
                 
                 else:
                     if detected_language == "fr":
@@ -270,10 +296,10 @@ class ToolManager:
                         return f"فشل التسجيل: {error_message}"
                     else:
                         return f"Registration failed: {error_message}"
-                    
+                        
             except Exception as e:
                 logging.error(f"An unexpected error occurred during registration: {e}")
-                detected_language = self.conversation_manager.detected_language
+                detected_language = getattr(self.conversation_manager, 'detected_language', 'en')
                 if detected_language == "fr":
                     return f"Une erreur inattendue est survenue lors de l'inscription : {str(e)}"
                 elif detected_language == "ar":
@@ -333,30 +359,45 @@ class ToolManager:
                 # Si aucun résultat, essayer de trouver des programmes similaires
                 similar = db_service.find_similar_programs(search_term, threshold=0.4)
                 if similar:
+                    formatted_similar = []
+                    for p in similar[:3]:
+                        formatted_program = format_program(p)
+                        formatted_similar.append(formatted_program)
+                    
                     return json.dumps({
                         "status": "similar_found",
                         "message": f"Aucun programme exact trouvé pour '{search_term}', mais voici des programmes similaires:",
-                        "programs": [format_program(p) for p in similar[:3]]
+                        "programs": formatted_similar
                     }, ensure_ascii=False, indent=2)
                 else:
+                    all_programs = get_all_programs_formatted()
                     return json.dumps({
                         "status": "no_programs_found",
                         "search_term": search_term,
                         "message": "Aucun programme trouvé. Voici tous nos programmes disponibles:",
-                        "all_programs": get_all_programs_formatted()
+                        "all_programs": all_programs
                     }, ensure_ascii=False, indent=2)
+            
+            formatted_programs = []
+            for program in programs:
+                formatted_program = format_program(program)
+                formatted_programs.append(formatted_program)
             
             return json.dumps({
                 "status": "success",
-                "programs": programs
+                "programs": formatted_programs
             }, ensure_ascii=False, indent=2)
 
         def format_program(program: Dict) -> Dict:
             """Formate un programme pour l'affichage."""
+            start_date = program.get('start_date')
+            if isinstance(start_date, datetime):
+                start_date = start_date.strftime('%Y-%m-%d')
+            
             return {
                 'program_name': program.get('program_name'),
                 'location': program.get('location'),
-                'start_date': program.get('start_date', 'N/A'),
+                'start_date': start_date if start_date else 'N/A',
                 'price': float(program.get('price', 0)),
                 'available_spots': program.get('available_spots', 0)
             }
@@ -402,46 +443,66 @@ class ToolManager:
             return response
 
         def verify_registration_info_progressive_func(wa_id: str) -> str:
+            """Vérifie progressivement les informations d'inscription d'un étudiant.
+            
+            Args:
+                wa_id: ID WhatsApp de l'utilisateur
             """
-            Version améliorée qui ne bloque pas si des infos manquent.
-            """
-            state = self.conversation_manager.get_user_state(wa_id)
-            personal_info = state.get("personal_info", {})
-            missing = self.conversation_manager.get_missing_fields(wa_id)
-            
-            if missing:
-                response = "📋 Voici les informations que j'ai déjà :\n\n"
+            try:
+                # Get user state and personal info
+                state = self.conversation_manager.get_user_state(wa_id)
+                personal_info = state.get("personal_info", {})
+
+                # Check registration status
+                verification_result = self.conversation_manager.verify_registration_info(wa_id)
                 
-                if personal_info.get("full_name"):
-                    response += f"✅ Nom : {personal_info['full_name']}\n"
-                if personal_info.get("email"):
-                    response += f"✅ Email : {personal_info['email']}\n"
-                if personal_info.get("phone"):
-                    response += f"✅ Téléphone : {personal_info['phone']}\n"
-                if personal_info.get("age"):
-                    response += f"✅ Âge : {personal_info['age']} ans\n"
-                
-                response += f"\n❌ Il me manque : {', '.join(missing)}\n"
-                response += f"\nPouvez-vous me donner votre {missing[0]} ?"
-                
-                return response
-            
-            # Si toutes les infos sont là, demander confirmation
-            response = "📋 **Vérification de vos informations :**\n\n"
-            response += f"• **Nom :** {personal_info['full_name']}\n"
-            response += f"• **Email :** {personal_info['email']}\n"
-            response += f"• **Téléphone :** {personal_info['phone']}\n"
-            response += f"• **Âge :** {personal_info['age']} ans\n"
-            
-            # Ajouter les infos du programme
-            if state.get("program"):
-                response += f"• **Programme :** {state['program'].get('program_name', 'N/A')}\n"
-                response += f"• **Lieu :** {state['program'].get('location', 'N/A')}\n"
-            
-            response += "\n✅ Ces informations sont-elles correctes ?\n"
-            response += "Répondez **'oui'** pour confirmer ou **'non'** pour modifier."
-            
-            return response
+                if not verification_result.get("is_complete"):
+                    missing_fields = verification_result.get("missing_fields", [])
+                    if self.conversation_manager.detected_language == "fr":
+                        return f"Il manque les informations suivantes : {', '.join(missing_fields)}"
+                    elif self.conversation_manager.detected_language == "ar":
+                        return f"المعلومات الناقصة: {', '.join(missing_fields)}"
+                    else:
+                        return f"Missing information: {', '.join(missing_fields)}"
+
+                # If all information is complete, show summary
+                user_info = verification_result.get("user_info", {})
+                if self.conversation_manager.detected_language == "fr":
+                    return (
+                        f"✅ Toutes les informations sont complètes!\n\n"
+                        f"📋 Récapitulatif:\n"
+                        f"- Nom complet: {user_info.get('full_name')}\n"
+                        f"- Email: {user_info.get('email')}\n"
+                        f"- Téléphone: {user_info.get('phone')}\n"
+                        f"- Âge: {user_info.get('age')} ans"
+                    )
+                elif self.conversation_manager.detected_language == "ar":
+                    return (
+                        f"✅ جميع المعلومات مكتملة!\n\n"
+                        f"📋 ملخص:\n"
+                        f"- الاسم الكامل: {user_info.get('full_name')}\n"
+                        f"- البريد الإلكتروني: {user_info.get('email')}\n"
+                        f"- الهاتف: {user_info.get('phone')}\n"
+                        f"- العمر: {user_info.get('age')} سنة"
+                    )
+                else:
+                    return (
+                        f"✅ All information is complete!\n\n"
+                        f"📋 Summary:\n"
+                        f"- Full Name: {user_info.get('full_name')}\n"
+                        f"- Email: {user_info.get('email')}\n"
+                        f"- Phone: {user_info.get('phone')}\n"
+                        f"- Age: {user_info.get('age')} years"
+                    )
+
+            except Exception as e:
+                logging.error(f"Error in verify_registration_info_progressive: {str(e)}")
+                if self.conversation_manager.detected_language == "fr":
+                    return "Une erreur s'est produite lors de la vérification des informations."
+                elif self.conversation_manager.detected_language == "ar":
+                    return "حدث خطأ أثناء التحقق من المعلومات."
+                else:
+                    return "An error occurred while verifying the information."
 
         def verify_user_info_func(wa_id: str) -> str:
             """Vérifie et retourne les informations de l'utilisateur pour confirmation.
@@ -585,6 +646,88 @@ class ToolManager:
                 else:
                     return f"ERROR: Unable to check registration: {str(e)}"
 
+        def verify_registration_info_progressive(self, wa_id: str) -> str:
+            """Vérifie progressivement les informations d'inscription d'un étudiant.
+            
+            Args:
+                wa_id: ID WhatsApp de l'utilisateur
+            """
+            try:
+                # Récupérer l'état de l'utilisateur
+                user_state = self.conversation_manager.get_user_state(wa_id)
+                if not user_state:
+                    raise ValueError("État utilisateur non trouvé")
+
+                personal_info = user_state.get("personal_info", {})
+                program_info = user_state.get("program", {})
+
+                # Vérifier les informations personnelles
+                missing_info = []
+                if not personal_info.get("full_name"):
+                    missing_info.append("nom complet")
+                if not personal_info.get("email"):
+                    missing_info.append("email")
+                if not personal_info.get("phone"):
+                    missing_info.append("téléphone")
+                if not personal_info.get("age"):
+                    missing_info.append("âge")
+
+                # Si des informations sont manquantes
+                if missing_info:
+                    detected_language = self.conversation_manager.detected_language
+                    if detected_language == "fr":
+                        return f"Il manque les informations suivantes : {', '.join(missing_info)}"
+                    elif detected_language == "ar":
+                        missing_info_ar = {
+                            "nom complet": "الاسم الكامل",
+                            "email": "البريد الإلكتروني",
+                            "téléphone": "رقم الهاتف",
+                            "âge": "العمر"
+                        }
+                        missing_ar = [missing_info_ar[info] for info in missing_info]
+                        return f"المعلومات التالية مفقودة: {' ، '.join(missing_ar)}"
+                    else:
+                        missing_info_en = {
+                            "nom complet": "full name",
+                            "email": "email",
+                            "téléphone": "phone number",
+                            "âge": "age"
+                        }
+                        missing_en = [missing_info_en[info] for info in missing_info]
+                        return f"The following information is missing: {', '.join(missing_en)}"
+
+                # Si toutes les informations sont présentes, procéder à l'inscription
+                try:
+                    result = register_student_func(
+                        program_info.get("location", "Casablanca"),
+                        personal_info.get("full_name").split()[0],  # Prénom
+                        personal_info.get("full_name").split()[-1],  # Nom
+                        personal_info.get("email"),
+                        personal_info.get("phone"),
+                        str(personal_info.get("age")),
+                        wa_id
+                    )
+                    return result
+                except Exception as e:
+                    logging.error(f"Erreur lors de l'inscription : {e}")
+                    detected_language = self.conversation_manager.detected_language
+                    if detected_language == "fr":
+                        return f"Une erreur est survenue lors de l'inscription : {str(e)}"
+                    elif detected_language == "ar":
+                        return f"حدث خطأ أثناء التسجيل: {str(e)}"
+                    else:
+                        return f"An error occurred during registration: {str(e)}"
+
+            except Exception as e:
+                logging.error(f"Erreur dans verify_registration_info_progressive : {e}")
+                detected_language = self.conversation_manager.detected_language
+                if detected_language == "fr":
+                    return f"Une erreur est survenue lors de la vérification : {str(e)}"
+                elif detected_language == "ar":
+                    return f"حدث خطأ أثناء التحقق: {str(e)}"
+                else:
+                    return f"An error occurred during verification: {str(e)}"
+
         # Register all the defined functions as tools
         # Note: verify_registration_info remplacé par verify_registration_info_progressive pour une meilleure UX
         # self.register_tool("verify_registration_info", verify_registration_info_func, ...)
@@ -605,9 +748,9 @@ class ToolManager:
              "ar": "الحصول على معلومات مفصلة لبرنامج معين حسب اسمه وموقعه (مثال: 'تطوير الويب الكامل - الدار البيضاء'). تعيد JSON. (الحجج: اسم_البرنامج_والموقع: str)"})
         
         self.register_tool("register_student", register_student_func,
-            {"en": "Register a new student for a bootcamp program. Expects full name, email, phone, age and WhatsApp ID. (args: location: str, first_name: str, last_name: str, email: str, phone: str, age: str, wa_id: str)",
-             "fr": "Inscrire un nouvel étudiant à un programme de bootcamp. Attend le nom complet, l'email, le téléphone, l'âge et l'ID WhatsApp. (arguments: location: str, first_name: str, last_name: str, email: str, phone: str, age: str, wa_id: str)",
-             "ar": "تسجيل طالب جديد في برنامج المعسكر التدريبي. يتطلب الاسم الكامل، البريد الإلكتروني، الهاتف، العمر ومعرف واتساب. (الحجج: location: str, first_name: str, last_name: str, email: str, phone: str, age: str, wa_id: str)"})
+            {"en": "Register a new student for a bootcamp program. Expects location, full name, email, phone, age, and wa_id. (args: location: str, first_name: str, last_name: str, email: str, phone: str, age: str, wa_id: str)",
+             "fr": "Inscrire un nouvel étudiant à un programme de bootcamp. Attend le lieu, nom complet, email, téléphone, âge et wa_id. (arguments: location: str, first_name: str, last_name: str, email: str, phone: str, age: str, wa_id: str)",
+             "ar": "تسجيل طالب جديد في برنامج المعسكر التدريبي. يتطلب الموقع، الاسم الكامل، البريد الإلكتروني، الهاتف، العمر، ومعرف الواتساب. (الحجج: location: str, first_name: str, last_name: str, email: str, phone: str, age: str, wa_id: str)"})
         
         self.register_tool("search_programs", search_programs_func, 
             {"en": "Search for bootcamp programs by a given search term (e.g., program name, city). Returns JSON. (args: search_term: str)",
@@ -619,10 +762,15 @@ class ToolManager:
              "fr": "Mettre à jour les informations utilisateur progressivement en fonction du message. Détecte automatiquement le type d'information. (arguments: wa_id: str, message: str)",
              "ar": "تحديث معلومات المستخدم بشكل تدريجي بناءً على الرسالة. يكتشف نوع المعلومات تلقائياً. (الحجج: wa_id: str, message: str)"})
 
-        self.register_tool("verify_registration_info_progressive", verify_registration_info_progressive_func,
-            {"en": "Advanced version that does not block if some info is missing. (args: wa_id: str)",
-             "fr": "Version avancée qui ne bloque pas si des informations manquent. (arguments: wa_id: str)",
-             "ar": "إصدار متقدم لا يحظر إذا كانت بعض المعلومات غير موجودة. (الحجج: wa_id: str)"})
+        self.register_tool(
+            "verify_registration_info_progressive",
+            verify_registration_info_progressive_func,
+            {
+                "en": "Progressively verify registration information for a user. Returns missing fields or complete summary. (args: wa_id: str)",
+                "fr": "Vérifie progressivement les informations d'inscription d'un utilisateur. Retourne les champs manquants ou un résumé complet. (arguments: wa_id: str)",
+                "ar": "التحقق التدريجي من معلومات التسجيل للمستخدم. يعيد الحقول الناقصة أو ملخصاً كاملاً. (الحجج: wa_id: str)"
+            }
+        )
 
         self.register_tool("verify_user_info", verify_user_info_func,
             {"en": "Verify user information before registration. (args: wa_id: str)",

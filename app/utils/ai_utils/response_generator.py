@@ -19,7 +19,7 @@ if not GEMINI_API_KEY:
     sys.exit("GEMINI_API_KEY not configured. Exiting.")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-pro')
+model = genai.GenerativeModel('gemini-2.0-flash')
 
 def analyze_user_response(message: str, context: str) -> Dict:
     """

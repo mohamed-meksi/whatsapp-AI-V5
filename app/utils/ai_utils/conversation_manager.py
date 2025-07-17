@@ -16,7 +16,7 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-2.0-flash')
 
 generation_config = {
     "temperature": 0.7,
@@ -175,8 +175,54 @@ class ConversationManager:
         """
         Retourne le prochain champ manquant à collecter.
         """
-        missing = self.get_missing_fields(user_id)
-        return missing[0] if missing else None
+        missing_fields = self.get_missing_fields(user_id)
+        return missing_fields[0] if missing_fields else None
+
+    def verify_registration_info(self, user_id: str) -> Dict:
+        """
+        Vérifie les informations d'inscription d'un utilisateur.
+        
+        Args:
+            user_id: ID WhatsApp de l'utilisateur
+            
+        Returns:
+            Dict contenant:
+            - is_complete: bool - Si toutes les informations sont complètes
+            - missing_fields: List[str] - Liste des champs manquants
+            - user_info: Dict - Informations de l'utilisateur
+        """
+        state = self.get_user_state(user_id)
+        personal_info = state.get("personal_info", {})
+        
+        required_fields = {
+            "full_name": "nom complet",
+            "email": "adresse email", 
+            "phone": "numéro de téléphone",
+            "age": "âge"
+        }
+        
+        missing_fields = []
+        user_info = {}
+        
+        for field, field_name in required_fields.items():
+            if field not in personal_info or not personal_info[field]:
+                missing_fields.append(field_name)
+            else:
+                user_info[field] = personal_info[field]
+        
+        # Ajouter automatiquement le wa_id s'il n'est pas déjà présent
+        if "wa_id" not in personal_info:
+            personal_info["wa_id"] = user_id
+            user_info["wa_id"] = user_id
+            self._save_user_state(user_id)
+        else:
+            user_info["wa_id"] = personal_info["wa_id"]
+        
+        return {
+            "is_complete": len(missing_fields) == 0,
+            "missing_fields": missing_fields,
+            "user_info": user_info
+        }
 
     def is_collection_complete(self, user_id: str) -> bool:
         """
@@ -219,14 +265,27 @@ class ConversationManager:
     def update_user_info(self, user_id: str, field: str, value: str) -> str:
         """Met à jour une information spécifique pour l'utilisateur."""
         state = self.get_user_state(user_id)
+        
         if field == "program":
-            state["program"] = value
+            # Stocker le programme comme dictionnaire avec plus d'informations
+            if isinstance(value, str):
+                # Si c'est une chaîne, créer un dictionnaire basique
+                state["program"] = {
+                    "name": value,
+                    "location": "Casablanca"  # Valeur par défaut
+                }
+            else:
+                # Si c'est déjà un dictionnaire, le garder tel quel
+                state["program"] = value
         elif field == "level":
             state["level"] = value
         else:
+            # Pour les autres champs, les stocker dans personal_info
+            if "personal_info" not in state:
+                state["personal_info"] = {}
             state["personal_info"][field] = value
         
-        self._save_user_state(user_id)  # Sauvegarder en base
+        self._save_user_state(user_id)
         logging.info(f"Info utilisateur {user_id} mise à jour 📝: {field} = {value}")
         return f"User info '{field}' updated to '{value}'."
 
@@ -459,19 +518,20 @@ class ConversationManager:
             tool = self.tool_manager.get_tool(tool_name)
             if tool:
                 try:
-                    if tool_name == "set_user_step":
+                    if tool_name in ["set_user_step", "update_user_info"]:
                         raw_result = tool.execute(user_id, *args)
                     elif tool_name in ["get_user_step", "advance_to_next_step"]:
                         raw_result = tool.execute(user_id)
-                    elif tool_name == "update_user_info":
-                        raw_result = tool.execute(*args)  # wa_id est déjà dans args
-                    elif tool_name == "register_student":
-                        if len(args) == 6:  # Si on a les 6 arguments de base
-                            raw_result = tool.execute(*args, user_id)  # Ajouter le wa_id comme 7ème argument
-                        elif len(args) == 7:  # Si l'IA a déjà inclus le wa_id
-                            raw_result = tool.execute(*args)  # Utiliser les 7 arguments tels quels
+                    elif tool_name == "verify_registration_info_progressive":
+                        if len(args) == 1:
+                            raw_result = tool.execute(*args)
                         else:
-                            raw_result = f"Error: register_student requires 6 arguments (location, first_name, last_name, email, phone, age) plus wa_id, but received {len(args)} from tool call '{tool_call_str}' parsed as: {args}."
+                            raw_result = f"Error: verify_registration_info_progressive requires 1 argument (wa_id), but received {len(args)} from tool call '{tool_call_str}' parsed as: {args}."
+                    elif tool_name == "register_student":
+                        if len(args) == 7:  # Mise à jour pour accepter 7 arguments
+                            raw_result = tool.execute(*args) 
+                        else:
+                            raw_result = f"Error: register_student requires 7 arguments (location, first_name, last_name, email, phone, age, wa_id), but received {len(args)} from tool call '{tool_call_str}' parsed as: {args}."
                     elif tool_name == "get_program_details":
                         if len(args) == 1:
                             program_name_and_location = args[0]
