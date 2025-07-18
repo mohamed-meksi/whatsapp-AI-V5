@@ -41,7 +41,8 @@ Extract and return a JSON with:
    - Detected city name (raw form)
    - Any context about the location
 2. If program/education mentioned:
-   - Type of program/education
+   - Type of program/education (EXACT program name as shown in the list)
+   - Location for the program
    - Specific interests/requirements
    - Level/experience mentioned
 3. Other relevant information found
@@ -53,7 +54,8 @@ Return format:
         "context": string or null
     }},
     "program": {{
-        "type": string or null,
+        "name": string or null,
+        "location": string or null,
         "interests": list of strings,
         "level": string or null
     }},
@@ -87,6 +89,45 @@ Return format:
                 "is_valid_moroccan_city": is_valid,
                 "raw_city": city_name  # Garder la version originale
             })
+        
+        # Si un programme est mentionné avec une location, tenter de le sélectionner
+        program_info = analysis.get("program", {})
+        # Extraire l'ID utilisateur du contexte
+        context_dict = json.loads(context) if isinstance(context, str) else context
+        user_id = context_dict.get("user_id")
+        
+        # Si un programme est analysé et qu'on a un user_id, procéder à la sélection
+        if program_info.get("name") and program_info.get("location") and user_id:
+            try:
+                from .conversation_manager import conversation_manager
+                
+                # Sauvegarder la sélection complète du programme
+                result = conversation_manager.save_program_selection(
+                    user_id,
+                    program_info["name"],
+                    program_info["location"]
+                )
+                
+                # Mettre à jour l'analyse avec le résultat de la sauvegarde
+                analysis["program"]["selection_result"] = result
+                
+                if result["success"]:
+                    # Mettre à jour avec les informations exactes du programme
+                    analysis["program"].update({
+                        "name": result["program_name"],
+                        "location": result["location"],
+                        "id": result.get("program_id")
+                    })
+                    logging.info(f"✅ Programme sélectionné et sauvegardé: {result['program_name']} à {result['location']}")
+                else:
+                    logging.warning(f"⚠️ Échec de la sélection du programme: {program_info}")
+                    
+            except Exception as e:
+                logging.error(f"❌ Erreur lors de la sélection du programme: {e}")
+                analysis["program"]["selection_result"] = {
+                    "success": False,
+                    "error": str(e)
+                }
         
         return analysis
         

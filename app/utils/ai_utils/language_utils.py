@@ -10,4 +10,4 @@ def detect_language_from_message(message: str) -> str:
         else:
             return "ar"  
     except LangDetectException:
-        return "ar"  
+        return "ar" 

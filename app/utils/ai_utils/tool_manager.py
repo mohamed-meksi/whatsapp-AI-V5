@@ -43,13 +43,21 @@ class ToolManager:
             elif len(args) >= 2:
                 user_id = args[0]
                 step = args[1]
-            # Gestion du cas mixte (parfois le parsing duplique user_id)
-            elif len(args) >= 3:
-                user_id = args[0]  # Premier argument
-                step = args[2]     # Troisième argument (le deuxième est souvent un doublon)
+            elif len(args) == 1:
+                user_id = args[0]
+                step = "motivation"  # Étape par défaut
             
-            if not user_id or not step:
-                raise ValueError("Les arguments 'user_id' et 'step' sont requis")
+            if not user_id:
+                raise ValueError("L'argument 'user_id' est requis")
+            
+            # Vérifier que l'étape est valide
+            valid_steps = ["motivation", "program_selection", "collect_personal_info", 
+                         "verify_information", "confirm_enrollment", "enrollment_complete", 
+                         "already_registered"]
+            
+            if not step or step not in valid_steps:
+                step = "motivation"  # Utiliser l'étape par défaut si invalide
+                logging.warning(f"Étape invalide pour {user_id}, utilisation de l'étape par défaut 'motivation'")
             
             return self.conversation_manager.set_user_step(user_id=user_id, step=step)
         
@@ -185,37 +193,49 @@ class ToolManager:
             try:
                 age_int = int(age)
 
-                # Récupérer l'état de l'utilisateur pour vérifier la location
+                # Récupérer l'état de l'utilisateur pour vérifier le programme choisi
                 user_state = self.conversation_manager.get_user_state(wa_id)
                 program_info = user_state.get("program") if user_state else None
                 
-                # FIX: Vérifier si program_info est un dictionnaire ou une chaîne
-                if isinstance(program_info, dict):
-                    stored_location = program_info.get("location", location)
-                elif isinstance(program_info, str):
-                    # Si program_info est une chaîne, utiliser la location passée en paramètre
-                    stored_location = location
-                else:
-                    stored_location = location
+                # Récupérer le nom du programme et la localisation depuis l'état de l'utilisateur
+                program_name = None
+                program_location = location
                 
-                # Utiliser la location stockée si elle existe
-                program_location = stored_location if stored_location else location
+                if isinstance(program_info, dict):
+                    program_name = program_info.get("name") or program_info.get("program_name")
+                    program_location = program_info.get("location", location)
+                elif isinstance(program_info, str):
+                    # Si program_info est une chaîne, c'est probablement le nom du programme
+                    program_name = program_info
+                    program_location = location
 
-                # Trouver le programme par lieu
-                program = db_service.get_program_by_location(program_location)
+                # Rechercher le programme avec nom ET localisation
+                program = None
+                if program_name and program_location:
+                    # Utiliser la fonction qui recherche par nom ET localisation
+                    program = db_service.get_program_by_name_and_location(program_name, program_location)
+                
+                # Si pas trouvé avec nom et localisation, essayer juste avec la localisation (fallback)
                 if not program:
-                    logging.error(f"Aucun programme trouvé pour le lieu: {program_location}")
+                    program = db_service.get_program_by_location(program_location)
+                    logging.warning(f"Programme spécifique '{program_name}' non trouvé, utilisation du premier programme à {program_location}")
+
+                if not program:
+                    logging.error(f"Aucun programme trouvé pour: {program_name} à {program_location}")
                     raise ValueError("Programme introuvable pour le lieu spécifié.")
 
                 # S'assurer que program est un dictionnaire et a un ID
                 if not isinstance(program, dict):
-                    logging.error(f"Format de programme invalide pour le lieu {program_location}: {type(program)}")
+                    logging.error(f"Format de programme invalide pour {program_name} à {program_location}: {type(program)}")
                     raise ValueError("Format de programme invalide")
 
                 program_id = program.get('id')
                 if not program_id:
                     logging.error(f"ID du programme manquant pour le programme: {program}")
                     raise ValueError("ID du programme manquant")
+
+                # Log pour le débogage
+                logging.info(f"Inscription de {first_name} {last_name} au programme: {program.get('program_name')} (ID: {program_id}) à {program_location}")
 
                 # Procéder à l'inscription avec le wa_id
                 result = db_service.register_student(
@@ -406,6 +426,43 @@ class ToolManager:
             """Retourne tous les programmes formatés."""
             all_programs = db_service.get_all_programs()
             return [format_program(p) for p in all_programs]
+
+        def save_program_selection_func(wa_id: str, program_name: str, location: str) -> str:
+            """
+            Sauvegarde la sélection complète du programme avec nom et localisation.
+            
+            Args:
+                wa_id: ID WhatsApp de l'utilisateur
+                program_name: Nom exact du programme choisi
+                location: Localisation du programme
+                
+            Returns:
+                Message de confirmation
+            """
+            try:
+                # Rechercher le programme pour obtenir son ID
+                program = db_service.get_program_by_name_and_location(program_name, location)
+                program_id = program.get("id") if program else None
+                
+                # Sauvegarder la sélection complète
+                result = self.conversation_manager.save_program_selection(
+                    wa_id, program_name, location, program_id
+                )
+                
+                if result["success"]:
+                    detected_language = getattr(self.conversation_manager, 'detected_language', 'fr')
+                    if detected_language == "fr":
+                        return f"✅ Programme sélectionné : {program_name} à {location}"
+                    elif detected_language == "ar":
+                        return f"✅ تم اختيار البرنامج: {program_name} في {location}"
+                    else:
+                        return f"✅ Program selected: {program_name} in {location}"
+                else:
+                    return "❌ Erreur lors de la sauvegarde du programme"
+                    
+            except Exception as e:
+                logging.error(f"Erreur dans save_program_selection_func: {e}")
+                return f"❌ Erreur: {str(e)}"
 
         def update_user_info_progressive_func(wa_id: str, message: str):
             """
@@ -782,6 +839,11 @@ class ToolManager:
              "fr": "Vérifier si un utilisateur est déjà inscrit quand il atteint l'étape 'collect_personal_info'. Bloque la collecte d'informations s'il est déjà inscrit. (arguments: wa_id: str)",
              "ar": "التحقق مما إذا كان المستخدم مسجلاً بالفعل عند وصوله لمرحلة 'collect_personal_info'. يمنع جمع المعلومات إذا كان مسجلاً. (الحجج: wa_id: str)"})
 
+        self.register_tool("save_program_selection", save_program_selection_func,
+            {"en": "Save the complete program selection with name and location. (args: wa_id: str, program_name: str, location: str)",
+             "fr": "Sauvegarder la sélection complète du programme avec nom et localisation. (arguments: wa_id: str, program_name: str, location: str)",
+             "ar": "حفظ اختيار البرنامج الكامل باسم وموقع. (الحجج: wa_id: str, program_name: str, location: str)"})
+
     def _parse_tool_call(self, tool_call: str) -> Tuple[str, List[Any], Dict[str, Any]]:
         """Parse un appel d'outil à partir d'une chaîne de caractères.
         
@@ -802,12 +864,24 @@ class ToolManager:
             
             # Traitement spécial pour set_user_step
             if tool_name == "set_user_step":
-                # Extraction des arguments nommés uniquement
+                # Extraction des arguments nommés
                 kwargs = {}
                 for arg in args_str.split(','):
-                    key, value = arg.strip().split('=')
-                    kwargs[key.strip()] = value.strip()
-                return tool_name, [], kwargs
+                    if '=' in arg:
+                        key, value = arg.strip().split('=')
+                        kwargs[key.strip()] = value.strip()
+                
+                # Créer la liste d'arguments dans le bon ordre
+                args = []
+                if 'user_id' in kwargs:
+                    args.append(kwargs['user_id'])
+                if 'step' in kwargs:
+                    args.append(kwargs['step'])
+                
+                # Vider kwargs car on utilise args
+                kwargs = {}
+                
+                return tool_name, args, kwargs
             
             # Traitement normal pour les autres outils
             args = []
