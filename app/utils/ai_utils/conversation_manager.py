@@ -262,10 +262,21 @@ class ConversationManager:
             self.set_current_step(user_id, self.ordered_steps[0])
             return f"Error: Current step invalid. Reset to {self.ordered_steps[0]}."
 
-    def update_user_info(self, user_id: str, field: str, value: str) -> str:
-        """Met à jour une information spécifique pour l'utilisateur."""
+    def update_user_info(self, user_id: str, field: str, value) -> Dict:
+        """
+        Met à jour une information spécifique de l'utilisateur.
+        
+        Args:
+            user_id: ID WhatsApp de l'utilisateur
+            field: Le champ à mettre à jour
+            value: La nouvelle valeur
+            
+        Returns:
+            Dict contenant le statut de la mise à jour
+        """
         state = self.get_user_state(user_id)
         
+        # Traitement spécial pour le programme avec nom et localisation
         if field == "program":
             # Stocker le programme comme dictionnaire avec plus d'informations
             if isinstance(value, str):
@@ -279,15 +290,62 @@ class ConversationManager:
                 state["program"] = value
         elif field == "level":
             state["level"] = value
+        elif field == "city":
+            # Mettre à jour aussi la localisation du programme si un programme est déjà sélectionné
+            if "program" in state and isinstance(state["program"], dict):
+                state["program"]["location"] = value
+            state["city"] = value
         else:
-            # Pour les autres champs, les stocker dans personal_info
+            # Pour les autres champs, stockage direct
             if "personal_info" not in state:
                 state["personal_info"] = {}
             state["personal_info"][field] = value
-        
+            
         self._save_user_state(user_id)
-        logging.info(f"Info utilisateur {user_id} mise à jour 📝: {field} = {value}")
-        return f"User info '{field}' updated to '{value}'."
+        
+        return {
+            "success": True,
+            "updated_field": field,
+            "new_value": value
+        }
+
+    def save_program_selection(self, user_id: str, program_name: str, location: str, program_id: str = None) -> Dict:
+        """
+        Sauvegarde la sélection complète du programme avec nom, localisation et ID.
+        
+        Args:
+            user_id: ID WhatsApp de l'utilisateur
+            program_name: Nom exact du programme
+            location: Localisation du programme
+            program_id: ID du programme (optionnel)
+            
+        Returns:
+            Dict contenant le statut de la sauvegarde
+        """
+        state = self.get_user_state(user_id)
+        
+        # Stocker toutes les informations du programme
+        state["program"] = {
+            "name": program_name,
+            "program_name": program_name,  # Alias pour compatibilité
+            "location": location,
+            "id": program_id  # Peut être None
+        }
+        
+        # Mettre à jour aussi la ville si pas déjà définie
+        if "city" not in state:
+            state["city"] = location
+            
+        self._save_user_state(user_id)
+        
+        logging.info(f"Programme sauvegardé pour {user_id}: {program_name} à {location} (ID: {program_id})")
+        
+        return {
+            "success": True,
+            "program_name": program_name,
+            "location": location,
+            "program_id": program_id
+        }
 
     def verify_user_information(self, user_id: str) -> Dict:
         """Vérifie et retourne les informations de l'utilisateur pour confirmation."""
@@ -337,7 +395,7 @@ class ConversationManager:
             gemini_history = []
             
             initial_system_context_template = (
-                            "You are a helpful and professional educational assistant for a Full Stack Web Development Bootcamp. "
+                            "You are a helpful and professional educational assistant for a Bootcamp geeks institute. "
                             "Your primary goal is to guide potential students through the bootcamp information and registration process. "
                             "You are based in Casablanca, Morocco.\n\n"
                             

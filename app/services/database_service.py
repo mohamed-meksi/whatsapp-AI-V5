@@ -10,7 +10,7 @@ load_dotenv()
 
 # MongoDB Configuration
 MONGODB_URL = os.getenv('MONGODB')
-DATABASE_NAME = os.getenv('DATABASE')
+DATABASE_NAME = os.getenv('DATABASE1')
 
 class DatabaseService:
     def __init__(self):
